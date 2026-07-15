@@ -35,12 +35,16 @@ always yields the same token (stable across a session) and nothing leaves the ma
 | Tier | Catches | Languages | Deps |
 |---|---|---|---|
 | **1 · Source tags** | anything your data layer knows is PII (`NAME`, `ADDRESS`, `PHONE`, …) | **all** — script-agnostic | none |
-| **2 · Regex packs** | e-mail, IBAN, card (Luhn-gated), IPv4/IPv6, MAC, ETH, BTC, international phone; opt-in per-locale national phone/id packs | per locale | none |
+| **2 · Regex packs** | e-mail, IBAN, card (Luhn-gated), IPv4/IPv6, MAC, ETH, BTC, international phone; opt-in per-locale national phone + national-id packs for **48 countries** | per locale | none |
 | **3 · NER backend** | untagged free-text names/places | model-bound (Presidio / GLiNER) | opt-in |
 
 Tier 1 is where Hermetic differs from NER-based redactors: instead of *guessing* PII in text
 (which is unreliable on non-English names and transliterations), your tools **tag** the fields
 they already know are PII. Exact, not probabilistic — and multilingual for free.
+
+National ids that are bare digit runs (PESEL, CPF, TCKN, Aadhaar, …) are **checksum-gated** — only
+a *valid* id masks, never a random number of the same length. Full coverage for all 48 locales,
+every entity, and the false-positive characteristics are in **[SPECS.md](SPECS.md)**.
 
 ## Install
 
@@ -125,12 +129,13 @@ input hooks and `restore` onto the output hook. That's the whole plugin.
 
 ```
 hermetic/
-├─ plugin.yaml          manifest (name, hooks)
-├─ __init__.py          re-exports register() for the Hermes loader
-├─ hermetic.py            the engine: mask / restore / vault, tag(), regex packs, register()
-├─ tests/test_hermetic.py the test stack (89 cases; python3 tests/test_hermetic.py)
-├─ pyproject.toml       pip packaging + entry point (hermes_agent.plugins)
-└─ LICENSE              MIT
+├─ plugin.yaml           manifest (name, hooks)
+├─ __init__.py           re-exports register() for the Hermes loader
+├─ hermetic.py           the engine: mask / restore / vault, tag(), regex packs, checksums, register()
+├─ SPECS.md              full coverage: entities, 48 locales, checksum table, FP notes
+├─ tests/test_hermetic.py the test stack (135 cases; python3 tests/test_hermetic.py)
+├─ pyproject.toml        pip packaging + entry point (hermes_agent.plugins)
+└─ LICENSE               MIT
 ```
 
 ## Development
@@ -139,11 +144,13 @@ hermetic/
 python3 tests/test_hermetic.py
 ```
 
-The suite proves masking + lossless round-trip across 21 scripts/languages (Czech, German,
-French, Vietnamese, Russian, Ukrainian, Greek, Chinese, Japanese, Korean, Arabic, Hebrew, Thai,
-Hindi, …), every entity type, opt-in locale packs, false-positive safety (tracking/order numbers
-survive), the Luhn gate, token stability, and vault eviction. **All test data is synthetic** —
-generic placeholder names, `example.*` domains, and public test vectors; nothing real.
+135 cases prove masking + lossless round-trip across 21 scripts/languages (Czech, German, French,
+Vietnamese, Russian, Ukrainian, Greek, Chinese, Japanese, Korean, Arabic, Hebrew, Thai, Hindi, …),
+every universal entity, national ids for 16 countries with real checksums (Spanish DNI, Brazilian
+CPF/CNPJ, Polish PESEL, Turkish TCKN, Indian Aadhaar/Verhoeff, …) — valid ids mask, bad-checksum
+numbers survive — national phone formats, false-positive safety (tracking/order numbers survive),
+the Luhn gate, token stability, and vault eviction. **All test data is synthetic** — generic
+placeholder names, `example.*` domains, and public test vectors; nothing real.
 
 ## License
 
