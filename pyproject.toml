@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloakr"
+version = "0.1.0"
+description = "Deterministic, reversible, multilingual PII tokenization for LLM agents (Hermes plugin)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Patrik Herák" }]
+keywords = ["pii", "privacy", "llm", "tokenization", "pseudonymization", "anonymization", "hermes", "gdpr", "redaction", "multilingual"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Security",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Text Processing :: Filters",
+]
+
+[project.urls]
+Homepage = "https://github.com/patrikherak/cloakr"
+Issues = "https://github.com/patrikherak/cloakr/issues"
+
+[project.entry-points."hermes_agent.plugins"]
+cloakr = "cloakr:register"
+
+[tool.setuptools]
+py-modules = ["cloakr"]

@@ -1,0 +1,13 @@
+name: cloakr
+version: 0.1.0
+description: >-
+  Deterministic, reversible, multilingual PII tokenization. Masks PII (names, addresses, phones,
+  e-mails, cards, ids) BEFORE it reaches the model via source-tags + regex, and restores it in the
+  final answer — so the model never sees personal data and the answer stays complete. No ML, no
+  network, no second LLM call.
+author: Patrik Herák
+kind: standalone
+hooks:
+  - transform_tool_result
+  - transform_terminal_output
+  - transform_llm_output
