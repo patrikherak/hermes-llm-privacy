@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Big test stack for Cloakr — proves masking works, restores losslessly, and doesn't eat
+"""Big test stack for Hermetic — proves masking works, restores losslessly, and doesn't eat
 non-PII, across many languages/scripts and every entity type. Pure stdlib.
-Run from the repo root:  python3 tests/test_cloakr.py
+Run from the repo root:  python3 tests/test_hermetic.py
 
 ALL DATA BELOW IS SYNTHETIC. Names are generic placeholders (the local "John/Jane Doe"), e-mails
 use reserved example domains, IBAN/card/crypto values are the well-known public test vectors, and
@@ -12,7 +12,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cloakr import Cloakr, tag, luhn_ok, D1, D2  # noqa: E402
+from hermetic import Hermetic, tag, luhn_ok, D1, D2  # noqa: E402
 
 P = {"ok": 0, "fail": 0, "fails": []}
 
@@ -44,7 +44,7 @@ NAMES = [
     ("emoji-adjacent", "Test 🌸 User"),
 ]
 for lang, name in NAMES:
-    cr = Cloakr()
+    cr = Hermetic()
     src = f"Row: {tag('NAME', name)} | id 80-000"
     m = cr.mask(src)
     ok = name not in m and "⟦PII_" in m and cr.restore(m) == unwrap(src)
@@ -70,14 +70,14 @@ ENTITIES = [
     ("PHONE-br", "+55 11 91234-5678"),
 ]
 for kind, val in ENTITIES:
-    cr = Cloakr()
+    cr = Hermetic()
     doc = f"contact: {val} end"
     m = cr.mask(doc)
     check(f"entity:{kind}:masked", val not in m and "⟦PII_" in m, f"m={m!r}")
     check(f"entity:{kind}:restore", cr.restore(m) == doc, f"restored={cr.restore(m)!r}")
 
 # ── 3. Credit cards: Luhn gate (opt-in) — standard public test numbers ─────────
-cr = Cloakr(entities=["CREDIT_CARD", "EMAIL"])
+cr = Hermetic(entities=["CREDIT_CARD", "EMAIL"])
 for label, card, should_mask in [
     ("visa-test", "4111 1111 1111 1111", True),
     ("mc-test", "5500 0000 0000 0004", True),
@@ -89,7 +89,7 @@ for label, card, should_mask in [
     check(f"card:{label}", did == should_mask, f"masked={did} want={should_mask} luhn={luhn_ok(card)}")
 
 # ── 4. FP-safety: non-PII must pass through UNTOUCHED (all invented) ────────────
-cr = Cloakr(entities=["CREDIT_CARD", "EMAIL", "IBAN", "PHONE", "IPV4", "MAC"])
+cr = Hermetic(entities=["CREDIT_CARD", "EMAIL", "IBAN", "PHONE", "IPV4", "MAC"])
 SAFE = [
     ("order-number", "5550001234"),
     ("tracking-generic", "99887766554433"),
@@ -108,7 +108,7 @@ for label, val in SAFE:
     check(f"safe:{label}", val in m and "⟦PII_" not in m, f"m={m!r}")
 
 # ── 5. Stability: same value → same token; different values → different tokens ─
-cr = Cloakr()
+cr = Hermetic()
 a1 = cr.mask(tag("EMAIL", "x@example.com")).strip()
 a2 = cr.mask("again " + tag("EMAIL", "x@example.com")).replace("again ", "").strip()
 b = cr.mask(tag("EMAIL", "z@example.com")).strip()
@@ -116,7 +116,7 @@ check("stable:same-value-same-token", a1 == a2, f"{a1!r} vs {a2!r}")
 check("stable:distinct-values-distinct-tokens", a1 != b, f"{a1!r} vs {b!r}")
 
 # ── 6. Round-trip losslessness on a big mixed-language document (all synthetic) ─
-cr = Cloakr(entities=["EMAIL", "IBAN", "PHONE", "IPV4", "MAC", "ETH", "SSN_US", "BTC"])
+cr = Hermetic(entities=["EMAIL", "IBAN", "PHONE", "IPV4", "MAC", "ETH", "SSN_US", "BTC"])
 BIG = (
     "Objednávka pro " + tag("NAME", "Řehoř Žížala") + " <jane.doe@example.com>, +420 601 111 222,\n"
     "adresa " + tag("ADDRESS", "Testovací 42, Nové Město") + ".\n"
@@ -133,7 +133,7 @@ check("big:tracking-survives", "99887766554433" in m and "80-5550001234" in m, "
 check("big:lossless-roundtrip", cr.restore(m) == unwrap(BIG), "restore != de-tagged original")
 
 # ── 7. Per-locale packs (opt-in) — invented ids in each country's format ───────
-cr = Cloakr(entities=["EMAIL"], locales=["cz", "us", "in", "br"])
+cr = Hermetic(entities=["EMAIL"], locales=["cz", "us", "in", "br"])
 for label, val in [
     ("cz-rodne-cislo", "000101/1234"),
     ("us-phone-national", "(415) 555-0132"),
@@ -145,12 +145,12 @@ for label, val in [
           f"m={m!r} restored={cr.restore(m)!r}")
 
 # ── 8. Correct entity labelling (no MAC↔IPv6 confusion) ────────────────────────
-cr = Cloakr(entities=["MAC", "IPV6"])
+cr = Hermetic(entities=["MAC", "IPV6"])
 check("label:mac-not-ipv6", "PII_MAC" in cr.mask("00:1A:2B:3C:4D:5E"), "mac mislabelled")
 check("label:ipv6", "PII_IPV6" in cr.mask("2001:db8::8a2e:370:7334"), "ipv6 missed")
 
 # ── 9. Edge cases ──────────────────────────────────────────────────────────────
-cr = Cloakr()
+cr = Hermetic()
 check("edge:empty", cr.mask("") == "", "empty broke")
 check("edge:none-tag", tag("NAME", None) == "", "None tag not empty")
 check("edge:no-pii-unchanged", cr.mask("just a plain sentence") == "just a plain sentence", "changed clean text")
@@ -162,7 +162,7 @@ mm = cr.mask(tag("NAME", special))
 check("edge:special-chars", cr.restore(mm) == special, f"special roundtrip {mm!r}")
 
 # ── 10. Vault bound + eviction ─────────────────────────────────────────────────
-cr = Cloakr(max_values=50)
+cr = Hermetic(max_values=50)
 for i in range(200):
     cr.mask(tag("EMAIL", f"user{i}@example.com"))
 check("vault:bounded", cr.size <= 50, f"size={cr.size}")
@@ -171,7 +171,7 @@ check("vault:recent-restorable", cr.restore(last) == "user199@example.com", "rec
 
 # ── report ─────────────────────────────────────────────────────────────────────
 total = P["ok"] + P["fail"]
-print(f"\n{'='*62}\nCLOAKR TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
+print(f"\n{'='*62}\nHERMETIC TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
 if P["fails"]:
     print("FAILURES:")
     for f in P["fails"]:

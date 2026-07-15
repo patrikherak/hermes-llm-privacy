@@ -1,8 +1,8 @@
-# Cloakr
+# Hermetic
 
 **Deterministic, reversible, multilingual PII tokenization for [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
 
-Check your PII at the door. Cloakr swaps real personal data — names, addresses, phones,
+Check your PII at the door. Hermetic swaps real personal data — names, addresses, phones,
 e-mails, cards, ids — for stable tokens **before** anything reaches the model, and reclaims the
 real values **after**, in the final message. The answer is complete, but the model never sees a
 single piece of personal data. Substitution is pure, deterministic code: no ML, no network, no
@@ -19,7 +19,7 @@ names are masked identically, because detection doesn't depend on the language.
 
 ## What it does
 
-Cloakr registers three Hermes hooks:
+Hermetic registers three Hermes hooks:
 
 | Hook | Direction | Action |
 |---|---|---|
@@ -38,7 +38,7 @@ always yields the same token (stable across a session) and nothing leaves the ma
 | **2 · Regex packs** | e-mail, IBAN, card (Luhn-gated), IPv4/IPv6, MAC, ETH, BTC, international phone; opt-in per-locale national phone/id packs | per locale | none |
 | **3 · NER backend** | untagged free-text names/places | model-bound (Presidio / GLiNER) | opt-in |
 
-Tier 1 is where Cloakr differs from NER-based redactors: instead of *guessing* PII in text
+Tier 1 is where Hermetic differs from NER-based redactors: instead of *guessing* PII in text
 (which is unreliable on non-English names and transliterations), your tools **tag** the fields
 they already know are PII. Exact, not probabilistic — and multilingual for free.
 
@@ -46,21 +46,21 @@ they already know are PII. Exact, not probabilistic — and multilingual for fre
 
 ```bash
 # as a Hermes plugin (recommended)
-hermes plugins install patrikherak/cloakr --enable
+hermes plugins install patrikherak/hermetic --enable
 
 # or via pip (auto-discovered on next start)
-pip install cloakr
+pip install hermetic
 
-# or manually: drop this repo into ~/.hermes/plugins/cloakr and enable it
+# or manually: drop this repo into ~/.hermes/plugins/hermetic and enable it
 ```
 
-Enable/disable later with `hermes plugins enable cloakr` / `hermes plugins disable cloakr`, or in
+Enable/disable later with `hermes plugins enable hermetic` / `hermes plugins disable hermetic`, or in
 `~/.hermes/config.yaml`:
 
 ```yaml
 plugins:
   enabled:
-    - cloakr
+    - hermetic
 ```
 
 ## Configure
@@ -69,13 +69,13 @@ All configuration is via environment variables (sensible defaults; nothing requi
 
 | Env var | Default | Effect |
 |---|---|---|
-| `CLOAKR_SOURCE_TAGS` | `true` | honor `tag()` markers from your tools (Tier 1) |
-| `CLOAKR_ENTITIES` | all universal except `CREDIT_CARD` | comma-list of regex entities to mask (Tier 2) |
-| `CLOAKR_LOCALES` | *(none)* | comma-list of locale packs, e.g. `cz,sk,de,us,in,br` |
-| `CLOAKR_TOKEN_FORMAT` | `⟦PII_{kind}_{n}⟧` | token template the model sees |
-| `CLOAKR_MAX_VALUES` | `5000` | vault size cap (LRU) |
+| `HERMETIC_SOURCE_TAGS` | `true` | honor `tag()` markers from your tools (Tier 1) |
+| `HERMETIC_ENTITIES` | all universal except `CREDIT_CARD` | comma-list of regex entities to mask (Tier 2) |
+| `HERMETIC_LOCALES` | *(none)* | comma-list of locale packs, e.g. `cz,sk,de,us,in,br` |
+| `HERMETIC_TOKEN_FORMAT` | `⟦PII_{kind}_{n}⟧` | token template the model sees |
+| `HERMETIC_MAX_VALUES` | `5000` | vault size cap (LRU) |
 
-Credit-card masking is opt-in (`CLOAKR_ENTITIES=...,credit_card`) — it's the one entity whose
+Credit-card masking is opt-in (`HERMETIC_ENTITIES=...,credit_card`) — it's the one entity whose
 length overlaps tracking/order numbers, and even then a Luhn check guards it.
 
 ### Tag PII at the source (Tier 1)
@@ -84,7 +84,7 @@ In your own query tool / DB wrapper, wrap the columns you *know* are PII. Langua
 into it:
 
 ```python
-from cloakr import tag
+from hermetic import tag
 
 row = {
     "order":   "80-5550001234",              # kept — not PII
@@ -94,7 +94,7 @@ row = {
 }
 ```
 
-`tag()` wraps the value in `U+E000 … U+E001` markers that Cloakr tokenizes at the hook boundary
+`tag()` wraps the value in `U+E000 … U+E001` markers that Hermetic tokenizes at the hook boundary
 and strips from the model's view entirely.
 
 **Tell the model about placeholders.** Add a line to your agent's system prompt so it passes
@@ -117,18 +117,18 @@ tool call. Guide it to filter in the same query (a subquery), or add an upstream
 
 ## How it works
 
-`cloakr.py` is a single, dependency-free module (`Cloakr` engine + `tag()` + `register()`). The
-plugin's `register(ctx)` builds one `Cloakr` from the env config and wires `mask` onto the two
+`hermetic.py` is a single, dependency-free module (`Hermetic` engine + `tag()` + `register()`). The
+plugin's `register(ctx)` builds one `Hermetic` from the env config and wires `mask` onto the two
 input hooks and `restore` onto the output hook. That's the whole plugin.
 
 ## Files
 
 ```
-cloakr/
+hermetic/
 ├─ plugin.yaml          manifest (name, hooks)
 ├─ __init__.py          re-exports register() for the Hermes loader
-├─ cloakr.py            the engine: mask / restore / vault, tag(), regex packs, register()
-├─ tests/test_cloakr.py the test stack (89 cases; python3 tests/test_cloakr.py)
+├─ hermetic.py            the engine: mask / restore / vault, tag(), regex packs, register()
+├─ tests/test_hermetic.py the test stack (89 cases; python3 tests/test_hermetic.py)
 ├─ pyproject.toml       pip packaging + entry point (hermes_agent.plugins)
 └─ LICENSE              MIT
 ```
@@ -136,7 +136,7 @@ cloakr/
 ## Development
 
 ```bash
-python3 tests/test_cloakr.py
+python3 tests/test_hermetic.py
 ```
 
 The suite proves masking + lossless round-trip across 21 scripts/languages (Czech, German,

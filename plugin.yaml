@@ -1,4 +1,4 @@
-name: cloakr
+name: hermetic
 version: 0.1.0
 description: >-
   Deterministic, reversible, multilingual PII tokenization. Masks PII (names, addresses, phones,

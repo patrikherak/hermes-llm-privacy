@@ -1,4 +1,4 @@
-"""Cloakr — deterministic, reversible, multilingual PII tokenization for LLM agents.
+"""Hermetic — deterministic, reversible, multilingual PII tokenization for LLM agents.
 
 Check your PII at the door: real personal data is swapped for stable tokens BEFORE it reaches
 the model, and reclaimed on the way out — so the answer is complete but the model never sees a
@@ -22,7 +22,7 @@ import re
 from collections import OrderedDict
 from typing import Iterable, Optional
 
-__all__ = ["Cloakr", "tag", "luhn_ok", "register", "D1", "D2"]
+__all__ = ["Hermetic", "tag", "luhn_ok", "register", "D1", "D2"]
 
 # ── Tier 1: source-tag markers (language-agnostic) ─────────────────────────────
 D1, D2 = chr(0xE000), chr(0xE001)
@@ -30,7 +30,7 @@ _TAG_RE = re.compile(re.escape(D1) + r"([A-Z_]+):(.*?)" + re.escape(D2), re.DOTA
 
 
 def tag(kind: str, value) -> str:
-    """Wrap a value your tool KNOWS is PII so Cloakr tokenizes it. Any language, any script."""
+    """Wrap a value your tool KNOWS is PII so Hermetic tokenizes it. Any language, any script."""
     value = "" if value is None else str(value)
     return f"{D1}{kind}:{value}{D2}" if value.strip() else value
 
@@ -87,7 +87,7 @@ LOCALES: dict = {
 }
 
 
-class Cloakr:
+class Hermetic:
     """A per-process vault + mask/restore. One instance per gateway (each is its own process)."""
 
     def __init__(
@@ -165,14 +165,14 @@ def _split(value: Optional[str]) -> Optional[list]:
 
 
 def register(ctx) -> None:
-    """Hermes wires this up. Configure via env: CLOAKR_ENTITIES, CLOAKR_LOCALES,
-    CLOAKR_SOURCE_TAGS, CLOAKR_TOKEN_FORMAT, CLOAKR_MAX_VALUES."""
-    cr = Cloakr(
-        entities=_split(os.getenv("CLOAKR_ENTITIES")),
-        locales=_split(os.getenv("CLOAKR_LOCALES")),
-        source_tags=os.getenv("CLOAKR_SOURCE_TAGS", "true").lower() not in ("0", "false", "no"),
-        token_format=os.getenv("CLOAKR_TOKEN_FORMAT", "⟦PII_{kind}_{n}⟧"),
-        max_values=int(os.getenv("CLOAKR_MAX_VALUES", "5000")),
+    """Hermes wires this up. Configure via env: HERMETIC_ENTITIES, HERMETIC_LOCALES,
+    HERMETIC_SOURCE_TAGS, HERMETIC_TOKEN_FORMAT, HERMETIC_MAX_VALUES."""
+    cr = Hermetic(
+        entities=_split(os.getenv("HERMETIC_ENTITIES")),
+        locales=_split(os.getenv("HERMETIC_LOCALES")),
+        source_tags=os.getenv("HERMETIC_SOURCE_TAGS", "true").lower() not in ("0", "false", "no"),
+        token_format=os.getenv("HERMETIC_TOKEN_FORMAT", "⟦PII_{kind}_{n}⟧"),
+        max_values=int(os.getenv("HERMETIC_MAX_VALUES", "5000")),
     )
 
     def _mask(result=None, output=None, **_kw):
