@@ -44,10 +44,10 @@ NAMES = [
     ("emoji-adjacent", "Test 🌸 User"),
 ]
 for lang, name in NAMES:
-    cr = Hermetic()
+    hx = Hermetic()
     src = f"Row: {tag('NAME', name)} | id 80-000"
-    m = cr.mask(src)
-    ok = name not in m and "⟦PII_" in m and cr.restore(m) == unwrap(src)
+    m = hx.mask(src)
+    ok = name not in m and "⟦PII_" in m and hx.restore(m) == unwrap(src)
     check(f"lang:{lang}", ok, f"masked={m!r}")
 
 # ── 2. Universal structured entities (each masked + round-trip) ────────────────
@@ -70,26 +70,26 @@ ENTITIES = [
     ("PHONE-br", "+55 11 91234-5678"),
 ]
 for kind, val in ENTITIES:
-    cr = Hermetic()
+    hx = Hermetic()
     doc = f"contact: {val} end"
-    m = cr.mask(doc)
+    m = hx.mask(doc)
     check(f"entity:{kind}:masked", val not in m and "⟦PII_" in m, f"m={m!r}")
-    check(f"entity:{kind}:restore", cr.restore(m) == doc, f"restored={cr.restore(m)!r}")
+    check(f"entity:{kind}:restore", hx.restore(m) == doc, f"restored={hx.restore(m)!r}")
 
 # ── 3. Credit cards: Luhn gate (opt-in) — standard public test numbers ─────────
-cr = Hermetic(entities=["CREDIT_CARD", "EMAIL"])
+hx = Hermetic(entities=["CREDIT_CARD", "EMAIL"])
 for label, card, should_mask in [
     ("visa-test", "4111 1111 1111 1111", True),
     ("mc-test", "5500 0000 0000 0004", True),
     ("amex-test", "3400 0000 0000 009", True),
     ("bad-luhn", "1234 5678 9012 3456", False),
 ]:
-    m = cr.mask(f"card {card} .")
+    m = hx.mask(f"card {card} .")
     did = card not in m and "⟦PII_CREDIT_CARD" in m
     check(f"card:{label}", did == should_mask, f"masked={did} want={should_mask} luhn={luhn_ok(card)}")
 
 # ── 4. FP-safety: non-PII must pass through UNTOUCHED (all invented) ────────────
-cr = Hermetic(entities=["CREDIT_CARD", "EMAIL", "IBAN", "PHONE", "IPV4", "MAC"])
+hx = Hermetic(entities=["CREDIT_CARD", "EMAIL", "IBAN", "PHONE", "IPV4", "MAC"])
 SAFE = [
     ("order-number", "5550001234"),
     ("tracking-generic", "99887766554433"),
@@ -104,19 +104,19 @@ SAFE = [
     ("bignum-16-nonluhn", "1111222233334445"),
 ]
 for label, val in SAFE:
-    m = cr.mask(f"value: {val} ok")
+    m = hx.mask(f"value: {val} ok")
     check(f"safe:{label}", val in m and "⟦PII_" not in m, f"m={m!r}")
 
 # ── 5. Stability: same value → same token; different values → different tokens ─
-cr = Hermetic()
-a1 = cr.mask(tag("EMAIL", "x@example.com")).strip()
-a2 = cr.mask("again " + tag("EMAIL", "x@example.com")).replace("again ", "").strip()
-b = cr.mask(tag("EMAIL", "z@example.com")).strip()
+hx = Hermetic()
+a1 = hx.mask(tag("EMAIL", "x@example.com")).strip()
+a2 = hx.mask("again " + tag("EMAIL", "x@example.com")).replace("again ", "").strip()
+b = hx.mask(tag("EMAIL", "z@example.com")).strip()
 check("stable:same-value-same-token", a1 == a2, f"{a1!r} vs {a2!r}")
 check("stable:distinct-values-distinct-tokens", a1 != b, f"{a1!r} vs {b!r}")
 
 # ── 6. Round-trip losslessness on a big mixed-language document (all synthetic) ─
-cr = Hermetic(entities=["EMAIL", "IBAN", "PHONE", "IPV4", "MAC", "ETH", "SSN_US", "BTC"])
+hx = Hermetic(entities=["EMAIL", "IBAN", "PHONE", "IPV4", "MAC", "ETH", "SSN_US", "BTC"])
 BIG = (
     "Objednávka pro " + tag("NAME", "Řehoř Žížala") + " <jane.doe@example.com>, +420 601 111 222,\n"
     "adresa " + tag("ADDRESS", "Testovací 42, Nové Město") + ".\n"
@@ -125,49 +125,49 @@ BIG = (
     "server 192.0.2.5 mac 00:1A:2B:3C:4D:5E wallet 0x52908400098527886E0F7030069857D2E4169EE7\n"
     "order 80-5550001234 tracking 99887766554433 (must survive)"
 )
-m = cr.mask(BIG)
+m = hx.mask(BIG)
 check("big:no-raw-pii-name", "Řehoř Žížala" not in m and "山田太郎" not in m and "Erika Mustermann" not in m, "name leaked")
 check("big:no-raw-email", "jane.doe@example.com" not in m and "erika@example.de" not in m and "taro@example.jp" not in m, "email leaked")
 check("big:no-raw-phone", "+420 601 111 222" not in m and "+81 90-1234-5678" not in m, "phone leaked")
 check("big:tracking-survives", "99887766554433" in m and "80-5550001234" in m, "non-PII got masked")
-check("big:lossless-roundtrip", cr.restore(m) == unwrap(BIG), "restore != de-tagged original")
+check("big:lossless-roundtrip", hx.restore(m) == unwrap(BIG), "restore != de-tagged original")
 
 # ── 7. Per-locale packs (opt-in) — invented ids in each country's format ───────
-cr = Hermetic(entities=["EMAIL"], locales=["cz", "us", "in", "br"])
+hx = Hermetic(entities=["EMAIL"], locales=["cz", "us", "in", "br"])
 for label, val in [
     ("cz-rodne-cislo", "000101/1234"),
     ("us-phone-national", "(415) 555-0132"),
     ("in-aadhaar", "2345 6789 0124"),
     ("br-cpf", "123.456.789-09"),
 ]:
-    m = cr.mask(f"id {val} .")
-    check(f"locale:{label}", val not in m and "⟦PII_" in m and cr.restore(m) == f"id {val} .",
-          f"m={m!r} restored={cr.restore(m)!r}")
+    m = hx.mask(f"id {val} .")
+    check(f"locale:{label}", val not in m and "⟦PII_" in m and hx.restore(m) == f"id {val} .",
+          f"m={m!r} restored={hx.restore(m)!r}")
 
 # ── 8. Correct entity labelling (no MAC↔IPv6 confusion) ────────────────────────
-cr = Hermetic(entities=["MAC", "IPV6"])
-check("label:mac-not-ipv6", "PII_MAC" in cr.mask("00:1A:2B:3C:4D:5E"), "mac mislabelled")
-check("label:ipv6", "PII_IPV6" in cr.mask("2001:db8::8a2e:370:7334"), "ipv6 missed")
+hx = Hermetic(entities=["MAC", "IPV6"])
+check("label:mac-not-ipv6", "PII_MAC" in hx.mask("00:1A:2B:3C:4D:5E"), "mac mislabelled")
+check("label:ipv6", "PII_IPV6" in hx.mask("2001:db8::8a2e:370:7334"), "ipv6 missed")
 
 # ── 9. Edge cases ──────────────────────────────────────────────────────────────
-cr = Hermetic()
-check("edge:empty", cr.mask("") == "", "empty broke")
+hx = Hermetic()
+check("edge:empty", hx.mask("") == "", "empty broke")
 check("edge:none-tag", tag("NAME", None) == "", "None tag not empty")
-check("edge:no-pii-unchanged", cr.mask("just a plain sentence") == "just a plain sentence", "changed clean text")
-adj = cr.mask(tag("NAME", "Alice") + tag("NAME", "Bob"))
+check("edge:no-pii-unchanged", hx.mask("just a plain sentence") == "just a plain sentence", "changed clean text")
+adj = hx.mask(tag("NAME", "Alice") + tag("NAME", "Bob"))
 check("edge:adjacent-tags", "Alice" not in adj and "Bob" not in adj and adj.count("⟦PII_") == 2, f"adj={adj!r}")
-check("edge:restore-idempotent", cr.restore(cr.restore(cr.mask(tag("EMAIL", "e@example.com")))) == "e@example.com", "double-restore broke")
+check("edge:restore-idempotent", hx.restore(hx.restore(hx.mask(tag("EMAIL", "e@example.com")))) == "e@example.com", "double-restore broke")
 special = "O'Brien-Müller & Co. <a@example.com>"
-mm = cr.mask(tag("NAME", special))
-check("edge:special-chars", cr.restore(mm) == special, f"special roundtrip {mm!r}")
+mm = hx.mask(tag("NAME", special))
+check("edge:special-chars", hx.restore(mm) == special, f"special roundtrip {mm!r}")
 
 # ── 10. Vault bound + eviction ─────────────────────────────────────────────────
-cr = Hermetic(max_values=50)
+hx = Hermetic(max_values=50)
 for i in range(200):
-    cr.mask(tag("EMAIL", f"user{i}@example.com"))
-check("vault:bounded", cr.size <= 50, f"size={cr.size}")
-last = cr.mask(tag("EMAIL", "user199@example.com"))
-check("vault:recent-restorable", cr.restore(last) == "user199@example.com", "recent evicted")
+    hx.mask(tag("EMAIL", f"user{i}@example.com"))
+check("vault:bounded", hx.size <= 50, f"size={hx.size}")
+last = hx.mask(tag("EMAIL", "user199@example.com"))
+check("vault:recent-restorable", hx.restore(last) == "user199@example.com", "recent evicted")
 
 # ── 11. National IDs — checksum-gated (valid masks; bad checksum survives) ──────
 # All values synthetic: documented public test vectors or algorithmically-valid throwaways.
@@ -190,10 +190,10 @@ IDVEC = [
     ("il", "TZ", "120000005", "120000006"),
 ]
 for loc, kind, valid, invalid in IDVEC:
-    hv = Hermetic(entities=["EMAIL"], locales=[loc])
-    mvr = hv.mask(f"id {valid} .")
+    hx = Hermetic(entities=["EMAIL"], locales=[loc])
+    mvr = hx.mask(f"id {valid} .")
     check(f"id:{loc}:{kind}:valid-masked",
-          valid not in mvr and f"⟦PII_{kind}" in mvr and hv.restore(mvr) == f"id {valid} .",
+          valid not in mvr and f"⟦PII_{kind}" in mvr and hx.restore(mvr) == f"id {valid} .",
           f"m={mvr!r}")
     mi = Hermetic(entities=["EMAIL"], locales=[loc]).mask(f"id {invalid} .")
     check(f"id:{loc}:{kind}:bad-checksum-survives", invalid in mi and "⟦PII_" not in mi, f"m={mi!r}")
@@ -207,9 +207,9 @@ FMT = [
     ("se", "PNR", "990101-1234"),
 ]
 for loc, kind, val in FMT:
-    hv = Hermetic(entities=["EMAIL"], locales=[loc])
-    m = hv.mask(f"id {val} .")
-    check(f"idfmt:{loc}:{kind}", val not in m and "⟦PII_" in m and hv.restore(m) == f"id {val} .", f"m={m!r}")
+    hx = Hermetic(entities=["EMAIL"], locales=[loc])
+    m = hx.mask(f"id {val} .")
+    check(f"idfmt:{loc}:{kind}", val not in m and "⟦PII_" in m and hx.restore(m) == f"id {val} .", f"m={m!r}")
 
 # ── 13. National phone formats (sampling of the locale packs) ──────────────────
 PH = [
@@ -218,9 +218,9 @@ PH = [
     ("kr", "010-1234-5678"), ("au", "0412 345 678"),
 ]
 for loc, val in PH:
-    hv = Hermetic(entities=["EMAIL"], locales=[loc])
-    m = hv.mask(f"tel {val} .")
-    check(f"natphone:{loc}", val not in m and "PII_PHONE" in m and hv.restore(m) == f"tel {val} .", f"m={m!r}")
+    hx = Hermetic(entities=["EMAIL"], locales=[loc])
+    m = hx.mask(f"tel {val} .")
+    check(f"natphone:{loc}", val not in m and "PII_PHONE" in m and hx.restore(m) == f"tel {val} .", f"m={m!r}")
 
 # ── 14. Locale coverage sanity ─────────────────────────────────────────────────
 from hermetic import LOCALES  # noqa: E402
