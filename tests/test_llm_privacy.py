@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Big test stack for Hermetic — proves masking works, restores losslessly, and doesn't eat
+"""Big test stack for PrivacyVault — proves masking works, restores losslessly, and doesn't eat
 non-PII, across many languages/scripts and every entity type. Pure stdlib.
-Run from the repo root:  python3 tests/test_hermetic.py
+Run from the repo root:  python3 tests/test_llm_privacy.py
 
 ALL DATA BELOW IS SYNTHETIC. Names are generic placeholders (the local "John/Jane Doe"), e-mails
 use reserved example domains, IBAN/card/crypto values are the well-known public test vectors, and
@@ -12,7 +12,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from hermetic import Hermetic, tag, luhn_ok, D1, D2  # noqa: E402
+from hermes_llm_privacy import PrivacyVault, tag, luhn_ok, D1, D2  # noqa: E402
 
 P = {"ok": 0, "fail": 0, "fails": []}
 
@@ -44,7 +44,7 @@ NAMES = [
     ("emoji-adjacent", "Test 🌸 User"),
 ]
 for lang, name in NAMES:
-    hx = Hermetic()
+    hx = PrivacyVault()
     src = f"Row: {tag('NAME', name)} | id 80-000"
     m = hx.mask(src)
     ok = name not in m and "⟦PII_" in m and hx.restore(m) == unwrap(src)
@@ -70,14 +70,14 @@ ENTITIES = [
     ("PHONE-br", "+55 11 91234-5678"),
 ]
 for kind, val in ENTITIES:
-    hx = Hermetic()
+    hx = PrivacyVault()
     doc = f"contact: {val} end"
     m = hx.mask(doc)
     check(f"entity:{kind}:masked", val not in m and "⟦PII_" in m, f"m={m!r}")
     check(f"entity:{kind}:restore", hx.restore(m) == doc, f"restored={hx.restore(m)!r}")
 
 # ── 3. Credit cards: Luhn gate (opt-in) — standard public test numbers ─────────
-hx = Hermetic(entities=["CREDIT_CARD", "EMAIL"])
+hx = PrivacyVault(entities=["CREDIT_CARD", "EMAIL"])
 for label, card, should_mask in [
     ("visa-test", "4111 1111 1111 1111", True),
     ("mc-test", "5500 0000 0000 0004", True),
@@ -89,7 +89,7 @@ for label, card, should_mask in [
     check(f"card:{label}", did == should_mask, f"masked={did} want={should_mask} luhn={luhn_ok(card)}")
 
 # ── 4. FP-safety: non-PII must pass through UNTOUCHED (all invented) ────────────
-hx = Hermetic(entities=["CREDIT_CARD", "EMAIL", "IBAN", "PHONE", "IPV4", "MAC"])
+hx = PrivacyVault(entities=["CREDIT_CARD", "EMAIL", "IBAN", "PHONE", "IPV4", "MAC"])
 SAFE = [
     ("order-number", "5550001234"),
     ("tracking-generic", "99887766554433"),
@@ -108,7 +108,7 @@ for label, val in SAFE:
     check(f"safe:{label}", val in m and "⟦PII_" not in m, f"m={m!r}")
 
 # ── 5. Stability: same value → same token; different values → different tokens ─
-hx = Hermetic()
+hx = PrivacyVault()
 a1 = hx.mask(tag("EMAIL", "x@example.com")).strip()
 a2 = hx.mask("again " + tag("EMAIL", "x@example.com")).replace("again ", "").strip()
 b = hx.mask(tag("EMAIL", "z@example.com")).strip()
@@ -116,7 +116,7 @@ check("stable:same-value-same-token", a1 == a2, f"{a1!r} vs {a2!r}")
 check("stable:distinct-values-distinct-tokens", a1 != b, f"{a1!r} vs {b!r}")
 
 # ── 6. Round-trip losslessness on a big mixed-language document (all synthetic) ─
-hx = Hermetic(entities=["EMAIL", "IBAN", "PHONE", "IPV4", "MAC", "ETH", "SSN_US", "BTC"])
+hx = PrivacyVault(entities=["EMAIL", "IBAN", "PHONE", "IPV4", "MAC", "ETH", "SSN_US", "BTC"])
 BIG = (
     "Objednávka pro " + tag("NAME", "Řehoř Žížala") + " <jane.doe@example.com>, +420 601 111 222,\n"
     "adresa " + tag("ADDRESS", "Testovací 42, Nové Město") + ".\n"
@@ -133,7 +133,7 @@ check("big:tracking-survives", "99887766554433" in m and "80-5550001234" in m, "
 check("big:lossless-roundtrip", hx.restore(m) == unwrap(BIG), "restore != de-tagged original")
 
 # ── 7. Per-locale packs (opt-in) — invented ids in each country's format ───────
-hx = Hermetic(entities=["EMAIL"], locales=["cz", "us", "in", "br"])
+hx = PrivacyVault(entities=["EMAIL"], locales=["cz", "us", "in", "br"])
 for label, val in [
     ("cz-rodne-cislo", "000101/1234"),
     ("us-phone-national", "(415) 555-0132"),
@@ -145,12 +145,12 @@ for label, val in [
           f"m={m!r} restored={hx.restore(m)!r}")
 
 # ── 8. Correct entity labelling (no MAC↔IPv6 confusion) ────────────────────────
-hx = Hermetic(entities=["MAC", "IPV6"])
+hx = PrivacyVault(entities=["MAC", "IPV6"])
 check("label:mac-not-ipv6", "PII_MAC" in hx.mask("00:1A:2B:3C:4D:5E"), "mac mislabelled")
 check("label:ipv6", "PII_IPV6" in hx.mask("2001:db8::8a2e:370:7334"), "ipv6 missed")
 
 # ── 9. Edge cases ──────────────────────────────────────────────────────────────
-hx = Hermetic()
+hx = PrivacyVault()
 check("edge:empty", hx.mask("") == "", "empty broke")
 check("edge:none-tag", tag("NAME", None) == "", "None tag not empty")
 check("edge:no-pii-unchanged", hx.mask("just a plain sentence") == "just a plain sentence", "changed clean text")
@@ -162,7 +162,7 @@ mm = hx.mask(tag("NAME", special))
 check("edge:special-chars", hx.restore(mm) == special, f"special roundtrip {mm!r}")
 
 # ── 10. Vault bound + eviction ─────────────────────────────────────────────────
-hx = Hermetic(max_values=50)
+hx = PrivacyVault(max_values=50)
 for i in range(200):
     hx.mask(tag("EMAIL", f"user{i}@example.com"))
 check("vault:bounded", hx.size <= 50, f"size={hx.size}")
@@ -190,12 +190,12 @@ IDVEC = [
     ("il", "TZ", "120000005", "120000006"),
 ]
 for loc, kind, valid, invalid in IDVEC:
-    hx = Hermetic(entities=["EMAIL"], locales=[loc])
+    hx = PrivacyVault(entities=["EMAIL"], locales=[loc])
     mvr = hx.mask(f"id {valid} .")
     check(f"id:{loc}:{kind}:valid-masked",
           valid not in mvr and f"⟦PII_{kind}" in mvr and hx.restore(mvr) == f"id {valid} .",
           f"m={mvr!r}")
-    mi = Hermetic(entities=["EMAIL"], locales=[loc]).mask(f"id {invalid} .")
+    mi = PrivacyVault(entities=["EMAIL"], locales=[loc]).mask(f"id {invalid} .")
     check(f"id:{loc}:{kind}:bad-checksum-survives", invalid in mi and "⟦PII_" not in mi, f"m={mi!r}")
 
 # ── 12. Format-based national ids (structure, no checksum) ─────────────────────
@@ -207,7 +207,7 @@ FMT = [
     ("se", "PNR", "990101-1234"),
 ]
 for loc, kind, val in FMT:
-    hx = Hermetic(entities=["EMAIL"], locales=[loc])
+    hx = PrivacyVault(entities=["EMAIL"], locales=[loc])
     m = hx.mask(f"id {val} .")
     check(f"idfmt:{loc}:{kind}", val not in m and "⟦PII_" in m and hx.restore(m) == f"id {val} .", f"m={m!r}")
 
@@ -218,17 +218,17 @@ PH = [
     ("kr", "010-1234-5678"), ("au", "0412 345 678"),
 ]
 for loc, val in PH:
-    hx = Hermetic(entities=["EMAIL"], locales=[loc])
+    hx = PrivacyVault(entities=["EMAIL"], locales=[loc])
     m = hx.mask(f"tel {val} .")
     check(f"natphone:{loc}", val not in m and "PII_PHONE" in m and hx.restore(m) == f"tel {val} .", f"m={m!r}")
 
 # ── 14. Locale coverage sanity ─────────────────────────────────────────────────
-from hermetic import LOCALES  # noqa: E402
+from hermes_llm_privacy import LOCALES  # noqa: E402
 check("locales:>=40", len(LOCALES) >= 40, f"only {len(LOCALES)}")
 
 # ── report ─────────────────────────────────────────────────────────────────────
 total = P["ok"] + P["fail"]
-print(f"\n{'='*62}\nHERMETIC TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
+print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
 if P["fails"]:
     print("FAILURES:")
     for f in P["fails"]:

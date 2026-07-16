@@ -1,4 +1,4 @@
-"""Hermetic — deterministic, reversible, multilingual PII tokenization for LLM agents.
+"""hermes-llm-privacy — deterministic, reversible, multilingual PII tokenization for LLM agents.
 
 Sealed against leaks: real personal data is swapped for stable tokens BEFORE it reaches the
 model, and reclaimed on the way out — so the answer is complete but the model never sees a name,
@@ -24,7 +24,7 @@ import re
 from collections import OrderedDict
 from typing import Callable, Iterable, List, Optional, Tuple
 
-__all__ = ["Hermetic", "tag", "luhn_ok", "register", "D1", "D2", "UNIVERSAL", "LOCALES"]
+__all__ = ["PrivacyVault", "tag", "luhn_ok", "register", "D1", "D2", "UNIVERSAL", "LOCALES"]
 
 # ── Tier 1: source-tag markers (language-agnostic) ─────────────────────────────
 D1, D2 = chr(0xE000), chr(0xE001)
@@ -32,7 +32,7 @@ _TAG_RE = re.compile(re.escape(D1) + r"([A-Z_]+):(.*?)" + re.escape(D2), re.DOTA
 
 
 def tag(kind: str, value) -> str:
-    """Wrap a value your tool KNOWS is PII so Hermetic tokenizes it. Any language, any script."""
+    """Wrap a value your tool KNOWS is PII so PrivacyVault tokenizes it. Any language, any script."""
     value = "" if value is None else str(value)
     return f"{D1}{kind}:{value}{D2}" if value.strip() else value
 
@@ -317,7 +317,7 @@ LOCALES: dict = {
 }
 
 
-class Hermetic:
+class PrivacyVault:
     """A per-process vault + mask/restore. One instance per gateway (each is its own process)."""
 
     def __init__(
@@ -396,14 +396,14 @@ def _split(value: Optional[str]) -> Optional[list]:
 
 
 def register(ctx) -> None:
-    """Hermes wires this up. Configure via env: HERMETIC_ENTITIES, HERMETIC_LOCALES,
-    HERMETIC_SOURCE_TAGS, HERMETIC_TOKEN_FORMAT, HERMETIC_MAX_VALUES."""
-    hx = Hermetic(
-        entities=_split(os.getenv("HERMETIC_ENTITIES")),
-        locales=_split(os.getenv("HERMETIC_LOCALES")),
-        source_tags=os.getenv("HERMETIC_SOURCE_TAGS", "true").lower() not in ("0", "false", "no"),
-        token_format=os.getenv("HERMETIC_TOKEN_FORMAT", "⟦PII_{kind}_{n}⟧"),
-        max_values=int(os.getenv("HERMETIC_MAX_VALUES", "5000")),
+    """Hermes wires this up. Configure via env: LLM_PRIVACY_ENTITIES, LLM_PRIVACY_LOCALES,
+    LLM_PRIVACY_SOURCE_TAGS, LLM_PRIVACY_TOKEN_FORMAT, LLM_PRIVACY_MAX_VALUES."""
+    hx = PrivacyVault(
+        entities=_split(os.getenv("LLM_PRIVACY_ENTITIES")),
+        locales=_split(os.getenv("LLM_PRIVACY_LOCALES")),
+        source_tags=os.getenv("LLM_PRIVACY_SOURCE_TAGS", "true").lower() not in ("0", "false", "no"),
+        token_format=os.getenv("LLM_PRIVACY_TOKEN_FORMAT", "⟦PII_{kind}_{n}⟧"),
+        max_values=int(os.getenv("LLM_PRIVACY_MAX_VALUES", "5000")),
     )
 
     def _mask(result=None, output=None, **_kw):

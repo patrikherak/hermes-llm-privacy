@@ -1,6 +1,6 @@
-# Hermetic — coverage specs
+# hermes-llm-privacy — coverage specs
 
-What Hermetic detects, by tier. Everything here is round-trip **reversible** and, for numeric ids,
+What hermes-llm-privacy detects, by tier. Everything here is round-trip **reversible** and, for numeric ids,
 **checksum-gated** where a checksum exists (so a random number of the same length does not mask).
 
 ## Tier 1 — source tags (language-agnostic, exact)
@@ -29,7 +29,7 @@ Arabic, Hebrew, Thai, Hindi, plus mixed/emoji. This is the recommended tier — 
 National (non-`+`) phone formats live in the locale packs below; the universal `PHONE` covers the
 international form for all countries.
 
-## Tier 2b — locale packs (opt-in via `HERMETIC_LOCALES=cz,de,…`)
+## Tier 2b — locale packs (opt-in via `LLM_PRIVACY_LOCALES=cz,de,…`)
 
 48 locales. **✓ = checksum-verified** (only a valid id masks); **fmt = format/structure only**.
 Every locale includes its national phone format.
@@ -114,12 +114,12 @@ Every locale includes its national phone format.
 ## Configuring
 
 ```yaml
-# ~/.hermes/config.yaml (or env: HERMETIC_LOCALES, HERMETIC_ENTITIES, …)
+# ~/.hermes/config.yaml (or env: LLM_PRIVACY_LOCALES, LLM_PRIVACY_ENTITIES, …)
 plugins:
-  enabled: [hermetic]
+  enabled: [hermes-llm-privacy]
 ```
 ```bash
-HERMETIC_LOCALES=cz,sk,de,pl,tr        # turn on the national packs you need
-HERMETIC_ENTITIES=email,iban,phone,credit_card   # narrow the universal set (optional)
+LLM_PRIVACY_LOCALES=cz,sk,de,pl,tr        # turn on the national packs you need
+LLM_PRIVACY_ENTITIES=email,iban,phone,credit_card   # narrow the universal set (optional)
 ```
-Tier-1 source tags are always on unless `HERMETIC_SOURCE_TAGS=false`.
+Tier-1 source tags are always on unless `LLM_PRIVACY_SOURCE_TAGS=false`.

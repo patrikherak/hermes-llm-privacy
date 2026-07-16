@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermetic"
-version = "0.2.0"
+name = "hermes-llm-privacy"
+version = "0.3.0"
 description = "Deterministic, reversible, multilingual PII tokenization for LLM agents (Hermes plugin)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -21,11 +21,11 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/patrikherak/hermetic"
-Issues = "https://github.com/patrikherak/hermetic/issues"
+Homepage = "https://github.com/patrikherak/hermes-llm-privacy"
+Issues = "https://github.com/patrikherak/hermes-llm-privacy/issues"
 
 [project.entry-points."hermes_agent.plugins"]
-hermetic = "hermetic:register"
+hermes_llm_privacy = "hermes_llm_privacy:register"
 
 [tool.setuptools]
-py-modules = ["hermetic"]
+py-modules = ["hermes_llm_privacy"]

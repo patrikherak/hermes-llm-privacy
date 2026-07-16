@@ -1,5 +1,5 @@
-name: hermetic
-version: 0.2.0
+name: hermes-llm-privacy
+version: 0.3.0
 description: >-
   Deterministic, reversible, multilingual PII tokenization. Masks PII (names, addresses, phones,
   e-mails, cards, ids) BEFORE it reaches the model via source-tags + regex, and restores it in the
