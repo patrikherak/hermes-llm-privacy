@@ -116,6 +116,25 @@ tokens through verbatim instead of treating them as missing data:
 > from you on purpose. Keep them verbatim in your reply; they are restored before the user sees
 > them. Never say a value is missing or alter a placeholder.
 
+## Threat model & guarantees
+
+This plugin is **enforced, not advisory**: the hooks run in code at the gateway, between every
+tool result and the model — the model *cannot* see the raw values regardless of how it behaves,
+what it's told, or whether a jailbreak succeeds. Because masking happens before context, the
+values are never sent to the LLM provider and never appear in conversation transcripts; the
+vault is in-process and nothing leaves the machine.
+
+Honest boundaries:
+
+- **Covered:** MCP tool output and terminal/shell output (the two input hooks).
+- **Not covered:** text the *user themselves* types into the chat — inbound human messages are
+  not intercepted. Don't paste PII at the model and expect the plugin to save you.
+- **Nothing retroactive:** the plugin protects from installation onward; whatever entered
+  context before it was enabled has already been sent.
+- If you can't run a gateway hook layer at all, the same engine exists as a best-effort,
+  instruction-based Agent Skill: [llm-privacy](https://github.com/patrikherak/llm-privacy) —
+  see its README for the (weaker) guarantees that apply there.
+
 ## What it does *not* mask
 
 Non-PII passes through untouched — order numbers, tracking numbers, UUIDs, SHA-256 hashes, ISO
