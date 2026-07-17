@@ -85,7 +85,8 @@ Everything is configured via environment variables — sensible defaults, nothin
 | `LLM_PRIVACY_ENTITIES` | all universal except `CREDIT_CARD` | comma-list of regex entities to mask (Tier 2) |
 | `LLM_PRIVACY_LOCALES` | *(none)* | comma-list of locale packs, e.g. `cz,sk,de,us,in,br` |
 | `LLM_PRIVACY_TOKEN_FORMAT` | `⟦PII_{kind}_{n}⟧` | token template the model sees |
-| `LLM_PRIVACY_MAX_VALUES` | `5000` | vault size cap (LRU) |
+| `LLM_PRIVACY_MAX_VALUES` | `5000` | per-session vault size cap (LRU) |
+| `LLM_PRIVACY_MAX_SESSIONS` | `200` | concurrent session vaults kept (LRU) |
 
 Credit-card masking is opt-in (`LLM_PRIVACY_ENTITIES=...,credit_card`) — it's the one entity
 whose length overlaps tracking/order numbers, and even then a Luhn check guards it.
@@ -123,6 +124,13 @@ tool result and the model — the model *cannot* see the raw values regardless o
 what it's told, or whether a jailbreak succeeds. Because masking happens before context, the
 values are never sent to the LLM provider and never appear in conversation transcripts; the
 vault is in-process and nothing leaves the machine.
+
+**Session isolation:** vaults are per-session — a token minted from a tool result in one
+conversation can only be restored in that same conversation, so on a multi-channel gateway
+nobody can extract another channel's values by echoing its tokens. Tokens are numbered from a
+process-wide counter, so tokens from different sessions can never collide. (Terminal output
+carries no session context upstream in Hermes, so terminal-minted tokens live in a shared vault
+that restore also consults — single-session gateways are unaffected.)
 
 Honest boundaries:
 

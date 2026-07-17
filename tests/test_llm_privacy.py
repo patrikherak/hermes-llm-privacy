@@ -226,6 +226,34 @@ for loc, val in PH:
 from hermes_llm_privacy import LOCALES  # noqa: E402
 check("locales:>=40", len(LOCALES) >= 40, f"only {len(LOCALES)}")
 
+# ── 15. register(): per-session vault isolation ────────────────────────────────
+from hermes_llm_privacy import register  # noqa: E402
+
+
+class _Ctx:
+    def __init__(self):
+        self.hooks = {}
+
+    def register_hook(self, name, fn):
+        self.hooks[name] = fn
+
+
+ctx = _Ctx()
+register(ctx)
+_mask, _term, _rest = (ctx.hooks["transform_tool_result"], ctx.hooks["transform_terminal_output"],
+                       ctx.hooks["transform_llm_output"])
+masked_a = _mask(result="mail: alice@example.com", session_id="A")
+tok_a = masked_a.split()[-1]
+check("sess:masked", "⟦PII_EMAIL" in masked_a, masked_a)
+check("sess:restore-same", _rest(response_text=f"ok {tok_a}", session_id="A") == "ok alice@example.com")
+leaked = _rest(response_text=f"ok {tok_a}", session_id="B")
+check("sess:no-cross-restore", leaked is None or tok_a in leaked, f"leaked={leaked!r}")
+masked_t = _term(output="mail: bob@example.org")
+tok_t = masked_t.split()[-1]
+check("sess:terminal-masks", "⟦PII_EMAIL" in masked_t, masked_t)
+check("sess:terminal-restores", _rest(response_text=f"t {tok_t}", session_id="A") == "t bob@example.org")
+check("sess:same-value-diff-token", _mask(result="mail: alice@example.com", session_id="B") != masked_a)
+
 # ── report ─────────────────────────────────────────────────────────────────────
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")

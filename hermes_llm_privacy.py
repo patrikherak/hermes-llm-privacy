@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from collections import OrderedDict
 from typing import Callable, Iterable, List, Optional, Tuple
 
@@ -327,6 +328,7 @@ class PrivacyVault:
         source_tags: bool = True,
         token_format: str = "⟦PII_{kind}_{n}⟧",
         max_values: int = 5000,
+        counter=None,  # shared iterator so tokens stay unique ACROSS vaults (no cross-vault collision)
     ):
         # Default: all universal patterns EXCEPT credit cards (opt-in — the only universal entity
         # whose length overlaps tracking/order numbers; a Luhn gate still guards it when enabled).
@@ -342,22 +344,25 @@ class PrivacyVault:
         self._t2v: "OrderedDict[str, str]" = OrderedDict()
         self._v2t: dict = {}
         self._n = 0
+        self._counter = counter
+        self._lock = threading.Lock()
 
     def _token(self, value: str, kind: str) -> str:
         if not value or not value.strip():  # keep the EXACT matched text (whitespace incl.) for lossless restore
             return value
-        tok = self._v2t.get(value)
-        if tok is not None:
-            self._t2v.move_to_end(tok)
+        with self._lock:
+            tok = self._v2t.get(value)
+            if tok is not None:
+                self._t2v.move_to_end(tok)
+                return tok
+            if len(self._t2v) >= self._max:
+                old_tok, old_val = self._t2v.popitem(last=False)
+                self._v2t.pop(old_val, None)
+            self._n = next(self._counter) if self._counter is not None else self._n + 1
+            tok = self._fmt.format(kind=kind, n=self._n)
+            self._t2v[tok] = value
+            self._v2t[value] = tok
             return tok
-        if len(self._t2v) >= self._max:
-            old_tok, old_val = self._t2v.popitem(last=False)
-            self._v2t.pop(old_val, None)
-        self._n += 1
-        tok = self._fmt.format(kind=kind, n=self._n)
-        self._t2v[tok] = value
-        self._v2t[value] = tok
-        return tok
 
     def mask(self, text: str) -> str:
         """Replace PII with tokens (call on the way IN — tool / terminal output)."""
@@ -379,7 +384,9 @@ class PrivacyVault:
         """Swap tokens back to the real values (call on the way OUT — final model message)."""
         if not isinstance(text, str) or not text or not self._t2v:
             return text
-        for tok, val in list(self._t2v.items()):
+        with self._lock:
+            items = list(self._t2v.items())
+        for tok, val in items:
             if tok in text:
                 text = text.replace(tok, val)
         return text
@@ -397,26 +404,51 @@ def _split(value: Optional[str]) -> Optional[list]:
 
 def register(ctx) -> None:
     """Hermes wires this up. Configure via env: LLM_PRIVACY_ENTITIES, LLM_PRIVACY_LOCALES,
-    LLM_PRIVACY_SOURCE_TAGS, LLM_PRIVACY_TOKEN_FORMAT, LLM_PRIVACY_MAX_VALUES."""
-    hx = PrivacyVault(
+    LLM_PRIVACY_SOURCE_TAGS, LLM_PRIVACY_TOKEN_FORMAT, LLM_PRIVACY_MAX_VALUES,
+    LLM_PRIVACY_MAX_SESSIONS.
+
+    Vaults are **per session**: a token minted from a tool result in one conversation can only be
+    restored in that same conversation (Hermes passes ``session_id`` to the tool-result and
+    llm-output hooks). Without isolation, echoing another session's token in a multi-channel
+    gateway would leak the real value across channels. Terminal output carries no session context
+    upstream, so terminal-minted tokens live in a shared vault that restore also consults."""
+    cfg = dict(
         entities=_split(os.getenv("LLM_PRIVACY_ENTITIES")),
         locales=_split(os.getenv("LLM_PRIVACY_LOCALES")),
         source_tags=os.getenv("LLM_PRIVACY_SOURCE_TAGS", "true").lower() not in ("0", "false", "no"),
         token_format=os.getenv("LLM_PRIVACY_TOKEN_FORMAT", "⟦PII_{kind}_{n}⟧"),
         max_values=int(os.getenv("LLM_PRIVACY_MAX_VALUES", "5000")),
     )
+    max_sessions = int(os.getenv("LLM_PRIVACY_MAX_SESSIONS", "200"))
+    vaults: "OrderedDict[str, PrivacyVault]" = OrderedDict()
+    vlock = threading.Lock()
+    shared_counter = iter(range(1, 1 << 62))  # tokens unique across ALL vaults
 
-    def _mask(result=None, output=None, **_kw):
+    def _vault(kw: dict) -> PrivacyVault:
+        sid = str(kw.get("session_id") or kw.get("session") or kw.get("channel_id") or "_global")
+        with vlock:
+            pv = vaults.get(sid)
+            if pv is None:
+                pv = PrivacyVault(counter=shared_counter, **cfg)
+                vaults[sid] = pv
+                if len(vaults) > max_sessions:
+                    vaults.popitem(last=False)
+            else:
+                vaults.move_to_end(sid)
+            return pv
+
+    def _mask(result=None, output=None, **kw):
         text = result if result is not None else output
         if not isinstance(text, str) or not text:
             return None
-        masked = hx.mask(text)
+        masked = _vault(kw).mask(text)
         return masked if masked != text else None
 
-    def _restore(response_text=None, **_kw):
+    def _restore(response_text=None, **kw):
         if not isinstance(response_text, str) or not response_text:
             return None
-        restored = hx.restore(response_text)
+        restored = _vault(kw).restore(response_text)
+        restored = _vault({}).restore(restored)  # terminal-minted tokens (no session context)
         return restored if restored != response_text else None
 
     ctx.register_hook("transform_tool_result", _mask)       # MCP tool output
