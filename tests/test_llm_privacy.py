@@ -333,6 +333,28 @@ check("egress:forwards", _res == "RESP")
 check("egress:masks-at-call", "x@example.com" not in str(_seen[-1]) and "PII_EMAIL" in str(_seen[-1]), str(_seen[-1]))
 check("egress:idempotent", _install_egress(lambda kw: _ev) is True and getattr(_stub.interruptible_api_call, "_llm_privacy_egress", False))
 
+# ── 17. Tier 3: bring-your-own detector (NER hook) ─────────────────────────────
+def _fake_ner(text):
+    # a stand-in for Presidio/GLiNER: returns (string, KIND) spans it "found"
+    out = []
+    for name in ("Jane Roe", "Kind"):
+        if name in text:
+            out.append((name, "PERSON"))
+    return out
+
+_d = PrivacyVault(entities=["EMAIL"], detectors=[_fake_ner])
+_src = "Kind and Jane Roe met; mail a@example.com"
+_m = _d.mask(_src)
+check("ner:name-Kind-masked", "Kind" not in _m and "PII_PERSON" in _m, _m)
+check("ner:multiword-name-masked", "Jane Roe" not in _m, _m)
+check("ner:regex-still-runs", "a@example.com" not in _m and "PII_EMAIL" in _m, _m)
+check("ner:lossless", _d.restore(_m) == _src, _d.restore(_m))
+check("ner:bad-detector-safe", PrivacyVault(detectors=[lambda t: 1/0]).mask("ok x") == "ok x")
+
+from hermes_llm_privacy import _load_detector  # noqa: E402
+check("ner:load-detector", callable(_load_detector("hermes_llm_privacy:luhn_ok")[0]))
+check("ner:load-detector-none", _load_detector(None) is None and _load_detector("nomodule:x") is None)
+
 # ── report ─────────────────────────────────────────────────────────────────────
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")

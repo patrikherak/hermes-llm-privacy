@@ -335,6 +335,7 @@ class PrivacyVault:
         terms_file: Optional[str] = None,
         terms_kind: str = "TERM",
         terms_ignore_case: bool = True,
+        detectors: Optional[Iterable[Callable]] = None,
         counter=None,  # shared iterator so tokens stay unique ACROSS vaults (no cross-vault collision)
     ):
         # Default: all universal patterns EXCEPT credit cards (opt-in — the only universal entity
@@ -353,6 +354,11 @@ class PrivacyVault:
         self._n = 0
         self._counter = counter
         self._lock = threading.Lock()
+        # Tier 3 — bring-your-own detector(s): each is a callable ``fn(text) -> iterable`` of the
+        # PII strings it found (or ``(string, KIND)`` pairs). Plug in Presidio / GLiNER / spaCy /
+        # any NER to catch free-text names & places the regex packs can't — WITHOUT this library
+        # taking an ML dependency. Runs after source-tags/terms, before the regex packs.
+        self._detectors: List[Callable] = list(detectors or [])
         # Custom terms (Tier 1.5): a caller-supplied list of literal strings to always mask —
         # personal names, internal codenames, account handles, anything a regex can't recognise.
         # Terms may be given inline and/or in a file that some external job regenerates; the file
@@ -449,6 +455,15 @@ class PrivacyVault:
             self._maybe_reload_terms()
         for kind, rx in self._term_patterns:  # Tier 1.5: caller-supplied literal terms
             text = rx.sub(lambda m, k=kind: self._token(m.group(0), k), text)
+        for det in self._detectors:  # Tier 3: bring-your-own detector (NER etc.) — mask found spans
+            try:
+                found = det(text) or ()
+            except Exception:
+                continue
+            for item in found:
+                val, kind = (item[0], item[1]) if isinstance(item, (tuple, list)) else (item, "PERSON")
+                if isinstance(val, str) and val.strip() and val in text:
+                    text = text.replace(val, self._token(val, _sanitize_kind(kind)))
         for kind, rx, validator in self._patterns:
             if validator is None:
                 text = rx.sub(lambda m, k=kind: self._token(m.group(0), k), text)
@@ -485,6 +500,22 @@ def _sanitize_kind(kind: Optional[str]) -> str:
     """A token kind must be a bare identifier — it goes into ``token_format`` and the restore path."""
     k = re.sub(r"[^A-Za-z0-9_]", "", (kind or "").strip()).upper()
     return k or "TERM"
+
+
+def _load_detector(spec: Optional[str]) -> Optional[list]:
+    """Resolve ``LLM_PRIVACY_DETECTOR='pkg.module:callable'`` into a [callable] for Tier 3, or None.
+    The callable takes text and returns the PII strings (or ``(string, KIND)`` pairs) it found."""
+    if not spec or ":" not in spec:
+        return None
+    mod, _, attr = spec.partition(":")
+    try:
+        import importlib
+
+        fn = getattr(importlib.import_module(mod), attr, None)
+        return [fn] if callable(fn) else None
+    except Exception:
+        _log.error("hermes-llm-privacy: could not load LLM_PRIVACY_DETECTOR=%r — Tier-3 NER OFF", spec)
+        return None
 
 
 def _mask_message_list(pv: "PrivacyVault", messages: list) -> list:
@@ -586,6 +617,7 @@ def register(ctx) -> None:
         terms_file=os.getenv("LLM_PRIVACY_TERMS_FILE") or None,
         terms_kind=os.getenv("LLM_PRIVACY_TERMS_KIND", "TERM"),
         terms_ignore_case=os.getenv("LLM_PRIVACY_TERMS_IGNORE_CASE", "true").lower() not in ("0", "false", "no"),
+        detectors=_load_detector(os.getenv("LLM_PRIVACY_DETECTOR")),
     )
     max_sessions = int(os.getenv("LLM_PRIVACY_MAX_SESSIONS", "200"))
     vaults: "OrderedDict[str, PrivacyVault]" = OrderedDict()

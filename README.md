@@ -53,7 +53,7 @@ yields the same token (stable across a session) and nothing ever leaves the mach
 | **1 · Source tags** | anything your data layer knows is PII (`NAME`, `ADDRESS`, `PHONE`, …) | **all** — script-agnostic | none |
 | **1.5 · Custom terms** | a caller-supplied wordlist of exact strings — personal names, internal codenames, account handles — inline or from a hot-reloaded file | **all** — literal match | none |
 | **2 · Regex packs** | e-mail, IBAN, card (Luhn-gated), IPv4/IPv6, MAC, ETH, BTC, international phone; opt-in per-locale national phone + national-id packs for **48 countries** | per locale | none |
-| **3 · NER backend** | untagged free-text names/places | model-bound (Presidio / GLiNER) | opt-in |
+| **3 · Detector hook** | untagged free-text names/places — via a callable **you** plug in (Presidio / GLiNER / spaCy / any NER) | model-bound | opt-in, no dep taken by this lib |
 
 Tier 1 is where this plugin differs from NER-based redactors: instead of *guessing* PII in text
 (unreliable on non-English names and transliterations), your tools **tag** the fields they
@@ -96,6 +96,7 @@ Everything is configured via environment variables — sensible defaults, nothin
 | `LLM_PRIVACY_TOKEN_FORMAT` | `⟦PII_{kind}_{n}⟧` | token template the model sees |
 | `LLM_PRIVACY_MAX_VALUES` | `5000` | per-session vault size cap (LRU) |
 | `LLM_PRIVACY_MAX_SESSIONS` | `200` | concurrent session vaults kept (LRU) |
+| `LLM_PRIVACY_DETECTOR` | *(none)* | `pkg.module:callable` — a bring-your-own NER/detector (Tier 3) |
 | `LLM_PRIVACY_TERMS` | *(none)* | comma-list of literal terms to always mask (Tier 1.5) |
 | `LLM_PRIVACY_TERMS_FILE` | *(none)* | path to a wordlist file, hot-reloaded on change (Tier 1.5) |
 | `LLM_PRIVACY_TERMS_KIND` | `TERM` | default token kind for terms without an explicit one |
@@ -135,6 +136,29 @@ acme-internal	ORG
 
 The list itself never leaves your machine — the plugin only ever reads it locally to build the
 matcher; it is not sent anywhere.
+
+### Bring your own detector — NER for free-text names (Tier 3)
+
+Source-tags and the wordlist are exact, but they need you to *know* what's PII. For untagged
+free-text — a name buried in a support ticket — nothing beats an NER model. This library won't take
+that (heavy) dependency, but it lets you **plug one in**: a callable `fn(text) -> [str | (str, KIND)]`
+returning the PII spans it found. It runs as Tier 3, and everything it returns is tokenized and
+restored like any other match.
+
+```python
+# your_ner.py — wrap Presidio / GLiNER / spaCy / top_secret / anything
+def detect(text):
+    return [(ent.text, ent.label_) for ent in _analyze(text)]   # e.g. [("Jane Roe", "PERSON")]
+```
+```bash
+export LLM_PRIVACY_DETECTOR="your_ner:detect"   # pkg.module:callable
+```
+
+Now `Jane Roe` (or `Kind`, a name a regex would never catch) is masked before the model, and
+restored in the reply — with none of the false-positive/declension pitfalls of an *NER-only*
+tool, because source-tags + wordlist still take precedence. A broken detector is caught and
+skipped (it never breaks masking). This is the deterministic-by-default, NER-when-you-want-it
+split — where a pure-NER redactor forces the model dependency on everyone.
 
 ### Tag PII at the source (Tier 1)
 
