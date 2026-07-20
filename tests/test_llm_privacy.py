@@ -298,13 +298,24 @@ import sys as _sys, types as _types
 from hermes_llm_privacy import _mask_message_list, _install_egress  # noqa: E402
 
 _hx = PrivacyVault(entities=["EMAIL"])
-_msgs = [{"role": "user", "content": "mail jane.doe@example.com"},
-         {"role": "assistant", "content": [{"type": "text", "text": "to jane.doe@example.com"},
+# Anthropic shape: tool_result in a user message (mask), plus the human's own text (leave raw).
+_msgs = [{"role": "user", "content": "orders for jane.doe@example.com"},   # human input — must stay raw
+         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                       "content": [{"type": "text", "text": "row: bob@example.org"}]}]},
+         {"role": "assistant", "content": [{"type": "text", "text": "ok"},
                                            {"type": "tool_use", "id": "t1", "input": {"q": 1}}]}]
 _out = _mask_message_list(_hx, _msgs)
-check("egress:text-masked", "jane.doe@example.com" not in str(_out) and "PII_EMAIL" in str(_out), str(_out))
-check("egress:tooluse-preserved", _out[1]["content"][1] == {"type": "tool_use", "id": "t1", "input": {"q": 1}})
-check("egress:restore", _hx.restore(str(_out)).count("jane.doe@example.com") == 2)
+check("egress:human-input-preserved", _out[0]["content"] == "orders for jane.doe@example.com", str(_out[0]))
+check("egress:toolresult-masked", "bob@example.org" not in str(_out[1]) and "PII_EMAIL" in str(_out[1]), str(_out[1]))
+check("egress:tooluse-preserved", _out[2]["content"][1] == {"type": "tool_use", "id": "t1", "input": {"q": 1}})
+check("egress:restore", "bob@example.org" in _hx.restore(str(_out)))
+
+# OpenAI shape: role:tool message masked, role:user string left raw.
+_hx2 = PrivacyVault(entities=["EMAIL"])
+_oa = _mask_message_list(_hx2, [{"role": "user", "content": "find x@example.com"},
+                                {"role": "tool", "content": "email eve@example.net"}])
+check("egress:openai-user-raw", _oa[0]["content"] == "find x@example.com")
+check("egress:openai-tool-masked", "eve@example.net" not in str(_oa[1]) and "PII_EMAIL" in str(_oa[1]), str(_oa[1]))
 
 _stub = _types.ModuleType("agent.chat_completion_helpers")
 _seen = []
@@ -317,7 +328,7 @@ _ev = PrivacyVault(entities=["EMAIL"])
 check("egress:install", _install_egress(lambda kw: _ev) is True)
 class _Ag:  # noqa: E306
     session_id = "s1"
-_res = _stub.interruptible_api_call(_Ag(), {"messages": [{"role": "user", "content": "x@example.com"}]})
+_res = _stub.interruptible_api_call(_Ag(), {"messages": [{"role": "tool", "content": "x@example.com"}]})
 check("egress:forwards", _res == "RESP")
 check("egress:masks-at-call", "x@example.com" not in str(_seen[-1]) and "PII_EMAIL" in str(_seen[-1]), str(_seen[-1]))
 check("egress:idempotent", _install_egress(lambda kw: _ev) is True and getattr(_stub.interruptible_api_call, "_llm_privacy_egress", False))

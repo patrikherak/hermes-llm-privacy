@@ -10,9 +10,10 @@ request goes to the provider, so nothing can bypass by construction.
 The plugin **monkeypatches the single provider-call chokepoint** at load —
 `agent.chat_completion_helpers.interruptible_api_call`, the function every provider request funnels
 through. The agent's method re-imports that name at call time, so replacing the module attribute
-takes effect immediately. The wrapper masks the text of every outgoing message
-(`messages` / `input`), preserving `tool_use`/`tool_result` structure and ids, then forwards to the
-original. Restore stays on `transform_llm_output`.
+takes effect immediately. The wrapper re-masks **tool-result content** in the outgoing messages (both Anthropic
+`tool_result` blocks and OpenAI `role: tool` messages), preserving structure/ids, then forwards to
+the original. It intentionally leaves the human's own input raw — masking user-typed values would
+break the model's ability to use them in a tool call (value-passing). Restore stays on `transform_llm_output`.
 
 **No Hermes core edit, no upstream PR, no proxy.** `pip install` + the env var is enough — which is
 why it works for public installs, not just a box you control.
@@ -25,8 +26,9 @@ LLM_PRIVACY_EGRESS=1   # in the gateway environment
 
 - **Composes with ingress** — already-minted tokens don't re-match, so this is a safety net on top
   of the input hooks, not double-masking.
-- **Covers the bypass paths** the review flagged: bypassed tools, sub-agents, and (now) user-typed
-  input all pass through this one chokepoint.
+- **Covers the bypass paths** the review flagged: tool output from inline-dispatched tools and
+  sub-agents passes through this one chokepoint. (User-typed input is intentionally not masked —
+  see above — to preserve value-passing.)
 - **Best-effort, version-pinned — but never *silently* off.** It targets a Hermes internal
   (`interruptible_api_call`). On successful install it logs `egress masking ACTIVE` at WARNING; if
   the internal moved and it can't patch, it logs an **ERROR** (`EGRESS REQUESTED BUT NOT

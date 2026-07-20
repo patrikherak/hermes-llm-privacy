@@ -488,26 +488,42 @@ def _sanitize_kind(kind: Optional[str]) -> str:
 
 
 def _mask_message_list(pv: "PrivacyVault", messages: list) -> list:
-    """Return a masked copy of a provider message list — only text is touched; ``tool_use`` /
-    ``tool_result`` structure and ids are preserved. Already-minted tokens don't re-match, so this
-    composes with the ingress hooks (safety net, not double-masking)."""
-    def mask_content(c):
-        if isinstance(c, str):
-            return pv.mask(c)
-        if isinstance(c, list):
-            out = []
-            for b in c:
-                if isinstance(b, dict) and isinstance(b.get("text"), str):
-                    b = {**b, "text": pv.mask(b["text"])}
-                out.append(b)
-            return out
-        return c
+    """Mask PII in **tool-result content only**, at the outgoing-request boundary.
+
+    Crucially it does NOT touch human/system/assistant text: the user must still be able to hand the
+    model a value (an e-mail, an order id) and have it USE that value in a tool call — masking the
+    user's own input would tokenize it into an opaque placeholder and break value-passing (the model
+    would query for the token, not the value). So egress only re-masks *tool output* — covering
+    results that reached the model via a path that bypassed the ingress hooks. Structure/ids of
+    ``tool_result`` blocks are preserved; already-minted tokens don't re-match (composes with
+    ingress). Handles both the Anthropic (``tool_result`` blocks in a user message) and OpenAI
+    (``role: tool`` message) shapes."""
+    def mask_blocks(blocks):
+        out = []
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                c = b.get("content")
+                if isinstance(c, str):
+                    b = {**b, "content": pv.mask(c)}
+                elif isinstance(c, list):
+                    c = [({**x, "text": pv.mask(x["text"])}
+                          if isinstance(x, dict) and isinstance(x.get("text"), str) else x)
+                         for x in c]
+                    b = {**b, "content": c}
+            out.append(b)
+        return out
 
     new = []
     for m in messages:
-        if isinstance(m, dict) and "content" in m:
-            new.append({**m, "content": mask_content(m["content"])})
-        else:
+        if not isinstance(m, dict):
+            new.append(m)
+            continue
+        content = m.get("content")
+        if m.get("role") == "tool":                 # OpenAI/Chat tool-result message
+            new.append({**m, "content": pv.mask(content)} if isinstance(content, str) else m)
+        elif isinstance(content, list):             # Anthropic content blocks — tool_result only
+            new.append({**m, "content": mask_blocks(content)})
+        else:                                        # human/system/assistant text — leave raw
             new.append(m)
     return new
 

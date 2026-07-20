@@ -204,12 +204,15 @@ Honest boundaries:
   enforces; pin it with an integration test in your deployment.
 ### Egress masking (experimental, opt-in) — closes the ingress gaps
 
-Set `LLM_PRIVACY_EGRESS=1` and the plugin masks the **whole outgoing message list at the single
-provider chokepoint** — so any path that reached context without firing the input hooks (bypassed
-tools, sub-agent output, even user-typed input) is masked too, by construction. Only text content
-is touched; `tool_use`/`tool_result` structure and ids are preserved, and already-minted tokens
-don't re-match (it composes with the ingress hooks as a safety net). This is the airtight placement
-Luky's review argued for.
+Set `LLM_PRIVACY_EGRESS=1` and the plugin re-masks **tool-result content at the single provider
+chokepoint** — so tool output that reached the model via a path that bypassed the input hooks
+(inline-dispatched tools, sub-agent output) is masked too, by construction. `tool_use`/`tool_result`
+structure and ids are preserved, and already-minted tokens don't re-match (it composes with the
+ingress hooks as a safety net).
+
+It deliberately does **not** mask the human's own input: the user must still be able to hand the
+model a value (an e-mail, an id) and have it use that value in a tool call — masking user input
+would tokenize it and break value-passing. So egress covers *tool output*, not user-typed text.
 
 **No host core change needed.** The plugin monkeypatches the one function every provider request
 funnels through (`agent.chat_completion_helpers.interruptible_api_call`) at load — so `pip install`
