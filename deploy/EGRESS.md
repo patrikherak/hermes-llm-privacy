@@ -27,9 +27,12 @@ LLM_PRIVACY_EGRESS=1   # in the gateway environment
   of the input hooks, not double-masking.
 - **Covers the bypass paths** the review flagged: bypassed tools, sub-agents, and (now) user-typed
   input all pass through this one chokepoint.
-- **Best-effort, version-pinned.** It targets a Hermes internal (`interruptible_api_call`). If a
-  future Hermes moves it, egress **silently no-ops** (logs a warning) and the ingress hooks keep
-  working — it never breaks the request path (all masking is wrapped in try/except).
+- **Best-effort, version-pinned — but never *silently* off.** It targets a Hermes internal
+  (`interruptible_api_call`). On successful install it logs `egress masking ACTIVE` at WARNING; if
+  the internal moved and it can't patch, it logs an **ERROR** (`EGRESS REQUESTED BUT NOT
+  INSTALLED …`). Because a silent egress no-op would mean PII silently reaching the provider, the
+  outcome is always logged loudly — check your gateway log after enabling. The ingress hooks keep
+  working regardless, and the request path never breaks (all masking is wrapped in try/except).
 - **Cost:** it re-scans the full outgoing message list on every call. Fine for normal contexts;
   for very long histories consider masking only new messages (future optimisation).
 - ⚠️ It rewrites every outgoing provider request. Validate on a non-critical agent first

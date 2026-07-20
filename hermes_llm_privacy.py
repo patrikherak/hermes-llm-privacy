@@ -19,11 +19,14 @@ is documented in SPECS.md.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
 from collections import OrderedDict
 from typing import Callable, Iterable, List, Optional, Tuple
+
+_log = logging.getLogger("hermes_llm_privacy")
 
 __all__ = ["PrivacyVault", "tag", "luhn_ok", "register", "D1", "D2", "UNIVERSAL", "LOCALES"]
 
@@ -520,13 +523,8 @@ def _install_egress(vault_fn) -> bool:
     silently no-ops (a warning is logged) and the ingress hooks keep working — it never breaks the
     request path. Idempotent."""
     try:
-        import logging
-
         import agent.chat_completion_helpers as _cch
     except Exception:
-        logging.getLogger(__name__).warning(
-            "llm-privacy: EGRESS requested but agent.chat_completion_helpers not importable; "
-            "egress disabled, ingress hooks still active")
         return False
     orig = getattr(_cch, "interruptible_api_call", None)
     if orig is None:
@@ -609,4 +607,13 @@ def register(ctx) -> None:
     ctx.register_hook("transform_terminal_output", _mask)   # shell / DB output
     ctx.register_hook("transform_llm_output", _restore)     # restore in the final message
     if os.getenv("LLM_PRIVACY_EGRESS", "").lower() in ("1", "true", "yes"):
-        _install_egress(_vault)
+        # Privacy-critical: a silent egress no-op means PII is NOT masked at the provider boundary,
+        # so ALWAYS log the install outcome loudly — never let egress fail unnoticed.
+        if _install_egress(_vault):
+            _log.warning("hermes-llm-privacy: egress masking ACTIVE — provider-call chokepoint "
+                         "patched (agent.chat_completion_helpers.interruptible_api_call)")
+        else:
+            _log.error("hermes-llm-privacy: EGRESS REQUESTED BUT NOT INSTALLED — the Hermes "
+                       "internal it patches moved; outgoing requests are NOT masked at the provider "
+                       "boundary. Ingress hooks still run. Update the plugin or pin your Hermes "
+                       "version.")
