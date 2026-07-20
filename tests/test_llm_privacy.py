@@ -293,6 +293,35 @@ check("terms:env-restore", ctx2.hooks["transform_llm_output"](
     response_text=em, session_id="X") == "works at Acme Corp on Zeta")
 del os.environ["LLM_PRIVACY_TERMS"]; del os.environ["LLM_PRIVACY_TERMS_KIND"]
 
+# ── 16. Egress: message-list masking + monkeypatch chokepoint ──────────────────
+import sys as _sys, types as _types
+from hermes_llm_privacy import _mask_message_list, _install_egress  # noqa: E402
+
+_hx = PrivacyVault(entities=["EMAIL"])
+_msgs = [{"role": "user", "content": "mail jane.doe@example.com"},
+         {"role": "assistant", "content": [{"type": "text", "text": "to jane.doe@example.com"},
+                                           {"type": "tool_use", "id": "t1", "input": {"q": 1}}]}]
+_out = _mask_message_list(_hx, _msgs)
+check("egress:text-masked", "jane.doe@example.com" not in str(_out) and "PII_EMAIL" in str(_out), str(_out))
+check("egress:tooluse-preserved", _out[1]["content"][1] == {"type": "tool_use", "id": "t1", "input": {"q": 1}})
+check("egress:restore", _hx.restore(str(_out)).count("jane.doe@example.com") == 2)
+
+_stub = _types.ModuleType("agent.chat_completion_helpers")
+_seen = []
+def _orig(agent_obj, api_kwargs):
+    _seen.append(api_kwargs); return "RESP"
+_stub.interruptible_api_call = _orig
+_sys.modules["agent"] = _types.ModuleType("agent")
+_sys.modules["agent.chat_completion_helpers"] = _stub
+_ev = PrivacyVault(entities=["EMAIL"])
+check("egress:install", _install_egress(lambda kw: _ev) is True)
+class _Ag:  # noqa: E306
+    session_id = "s1"
+_res = _stub.interruptible_api_call(_Ag(), {"messages": [{"role": "user", "content": "x@example.com"}]})
+check("egress:forwards", _res == "RESP")
+check("egress:masks-at-call", "x@example.com" not in str(_seen[-1]) and "PII_EMAIL" in str(_seen[-1]), str(_seen[-1]))
+check("egress:idempotent", _install_egress(lambda kw: _ev) is True and getattr(_stub.interruptible_api_call, "_llm_privacy_egress", False))
+
 # ── report ─────────────────────────────────────────────────────────────────────
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")

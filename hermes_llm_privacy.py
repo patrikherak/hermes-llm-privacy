@@ -484,6 +484,73 @@ def _sanitize_kind(kind: Optional[str]) -> str:
     return k or "TERM"
 
 
+def _mask_message_list(pv: "PrivacyVault", messages: list) -> list:
+    """Return a masked copy of a provider message list — only text is touched; ``tool_use`` /
+    ``tool_result`` structure and ids are preserved. Already-minted tokens don't re-match, so this
+    composes with the ingress hooks (safety net, not double-masking)."""
+    def mask_content(c):
+        if isinstance(c, str):
+            return pv.mask(c)
+        if isinstance(c, list):
+            out = []
+            for b in c:
+                if isinstance(b, dict) and isinstance(b.get("text"), str):
+                    b = {**b, "text": pv.mask(b["text"])}
+                out.append(b)
+            return out
+        return c
+
+    new = []
+    for m in messages:
+        if isinstance(m, dict) and "content" in m:
+            new.append({**m, "content": mask_content(m["content"])})
+        else:
+            new.append(m)
+    return new
+
+
+def _install_egress(vault_fn) -> bool:
+    """Airtight EGRESS masking with **no host core change**: monkeypatch the single provider-call
+    chokepoint (``agent.chat_completion_helpers.interruptible_api_call``) so EVERY outgoing request
+    is masked — even context that reached the model via a path that never fired the ingress hooks
+    (inline-dispatched tools, sub-agent output, user-typed input). The agent's method re-imports
+    this name at call time, so patching the module attribute takes effect immediately.
+
+    Best-effort: pinned to a Hermes internal. If that internal moves in a future version, egress
+    silently no-ops (a warning is logged) and the ingress hooks keep working — it never breaks the
+    request path. Idempotent."""
+    try:
+        import logging
+
+        import agent.chat_completion_helpers as _cch
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "llm-privacy: EGRESS requested but agent.chat_completion_helpers not importable; "
+            "egress disabled, ingress hooks still active")
+        return False
+    orig = getattr(_cch, "interruptible_api_call", None)
+    if orig is None:
+        return False
+    if getattr(orig, "_llm_privacy_egress", False):
+        return True
+
+    def _egress(agent_obj, api_kwargs, *args, **kwargs):
+        try:
+            if isinstance(api_kwargs, dict):
+                pv = vault_fn({"session_id": getattr(agent_obj, "session_id", "") or ""})
+                for key in ("messages", "input"):
+                    v = api_kwargs.get(key)
+                    if isinstance(v, list):
+                        api_kwargs[key] = _mask_message_list(pv, v)
+        except Exception:
+            pass  # never break the request path
+        return orig(agent_obj, api_kwargs, *args, **kwargs)
+
+    _egress._llm_privacy_egress = True
+    _cch.interruptible_api_call = _egress
+    return True
+
+
 def register(ctx) -> None:
     """Hermes wires this up. Configure via env: LLM_PRIVACY_ENTITIES, LLM_PRIVACY_LOCALES,
     LLM_PRIVACY_SOURCE_TAGS, LLM_PRIVACY_TOKEN_FORMAT, LLM_PRIVACY_MAX_VALUES,
@@ -538,44 +605,8 @@ def register(ctx) -> None:
         restored = _vault({}).restore(restored)  # terminal-minted tokens (no session context)
         return restored if restored != response_text else None
 
-    def _mask_egress(request_messages=None, **kw):
-        """EGRESS masking (opt-in, LLM_PRIVACY_EGRESS=1): tokenize PII in the whole outgoing
-        message list right before it goes to the provider — one chokepoint, so any path that
-        reached context WITHOUT firing the ingress hooks (bypassed tools, sub-agents, user input)
-        is still masked. Requires a host that lets pre_api_request replace the messages. Only text
-        content is touched; tool_use/tool_result structure and ids are left intact. Already-minted
-        tokens don't re-match, so this composes with the ingress hooks (safety net, not double-mask)."""
-        if not isinstance(request_messages, list):
-            return None
-        pv = _vault(kw)
-
-        def mask_content(c):
-            if isinstance(c, str):
-                return pv.mask(c)
-            if isinstance(c, list):
-                out = []
-                for b in c:
-                    if isinstance(b, dict) and isinstance(b.get("text"), str):
-                        b = {**b, "text": pv.mask(b["text"])}
-                    out.append(b)
-                return out
-            return c
-
-        new_msgs, changed = [], False
-        for m in request_messages:
-            if isinstance(m, dict) and "content" in m:
-                nc = mask_content(m["content"])
-                if nc != m["content"]:
-                    changed = True
-                new_msgs.append({**m, "content": nc})
-            else:
-                new_msgs.append(m)
-        return new_msgs if changed else None
-
     ctx.register_hook("transform_tool_result", _mask)       # MCP tool output
     ctx.register_hook("transform_terminal_output", _mask)   # shell / DB output
     ctx.register_hook("transform_llm_output", _restore)     # restore in the final message
     if os.getenv("LLM_PRIVACY_EGRESS", "").lower() in ("1", "true", "yes"):
-        # Airtight variant: mask at the single provider chokepoint. Needs the host's
-        # pre_api_request hook to be mutable (return value replaces the outgoing messages).
-        ctx.register_hook("pre_api_request", _mask_egress)
+        _install_egress(_vault)

@@ -1,41 +1,39 @@
-# Egress masking — the mutable `pre_api_request` requirement
+# Egress masking — airtight, no host core change
 
 `hermes-llm-privacy` masks at **ingress** (per input hook). That leaves gaps for any path that
 reaches model context without firing those hooks (inline-dispatched tools, sub-agent output,
 user-typed input). The airtight fix is to mask at **egress** — one chokepoint just before the
 request goes to the provider, so nothing can bypass by construction.
 
-Hermes exposes `pre_api_request`, but it is **observe-only**: it receives a *copy* of the messages
-for tracing (langfuse) and its return value is ignored. To enable egress masking, the host must let
-a `pre_api_request` hook **replace** the outgoing messages.
+## How (enabled with `LLM_PRIVACY_EGRESS=1`)
 
-## Minimal core change (Hermes)
+The plugin **monkeypatches the single provider-call chokepoint** at load —
+`agent.chat_completion_helpers.interruptible_api_call`, the function every provider request funnels
+through. The agent's method re-imports that name at call time, so replacing the module attribute
+takes effect immediately. The wrapper masks the text of every outgoing message
+(`messages` / `input`), preserving `tool_use`/`tool_result` structure and ids, then forwards to the
+original. Restore stays on `transform_llm_output`.
 
-In `agent/conversation_loop.py`, where `pre_api_request` is invoked, capture the return and apply a
-returned list back to the outgoing request (backward-compatible: hooks that return `None`, like
-langfuse, change nothing):
+**No Hermes core edit, no upstream PR, no proxy.** `pip install` + the env var is enough — which is
+why it works for public installs, not just a box you control.
 
-```python
-# was:  _invoke_hook("pre_api_request", ... request=_request_payload)
-_pre_results = _invoke_hook("pre_api_request", ..., request=_request_payload)
-for _pr in (_pre_results or []):
-    if isinstance(_pr, list) and _pr:
-        if isinstance(api_kwargs.get("messages"), list):
-            api_kwargs["messages"] = _pr
-        elif isinstance(api_kwargs.get("input"), list):
-            api_kwargs["input"] = _pr
-        break
+```bash
+LLM_PRIVACY_EGRESS=1   # in the gateway environment
 ```
 
-Then run the plugin with `LLM_PRIVACY_EGRESS=1`; it registers `_mask_egress` on `pre_api_request`,
-which masks text content of every message and returns the new list.
+## Guarantees & caveats
 
-## Status
+- **Composes with ingress** — already-minted tokens don't re-match, so this is a safety net on top
+  of the input hooks, not double-masking.
+- **Covers the bypass paths** the review flagged: bypassed tools, sub-agents, and (now) user-typed
+  input all pass through this one chokepoint.
+- **Best-effort, version-pinned.** It targets a Hermes internal (`interruptible_api_call`). If a
+  future Hermes moves it, egress **silently no-ops** (logs a warning) and the ingress hooks keep
+  working — it never breaks the request path (all masking is wrapped in try/except).
+- **Cost:** it re-scans the full outgoing message list on every call. Fine for normal contexts;
+  for very long histories consider masking only new messages (future optimisation).
+- ⚠️ It rewrites every outgoing provider request. Validate on a non-critical agent first
+  (round-trip correctness + request integrity) before a customer-facing bot.
 
-- Plugin side: implemented and shipped (env-gated `LLM_PRIVACY_EGRESS`, default off).
-- Host side: the above is a **proposed upstream change** to Hermes. Until it (or an equivalent
-  mutable pre-send hook) lands, egress masking is inert. Alternative without touching Hermes: a
-  pre-send **LLM proxy** (LiteLLM-style) that masks at the network edge.
-
-⚠️ This rewrites every outgoing provider request. Validate on a non-critical agent first
-(round-trip correctness + request integrity) before enabling on a production/customer-facing bot.
+The cleanest *long-term* form is still an upstream mutable pre-send hook (so no monkeypatch), but
+this delivers the guarantee today without touching the host.
