@@ -13,6 +13,21 @@ Verified round-trip across 21 scripts/languages in the test stack: Czech, German
 Polish, Vietnamese, Turkish, Russian, Ukrainian, Greek, Bulgarian, Chinese, Japanese, Korean,
 Arabic, Hebrew, Thai, Hindi, plus mixed/emoji. This is the recommended tier — it is exact.
 
+## Tier 1.5 — custom terms (caller-supplied wordlist, exact)
+
+When the source can't tag inline but you *have* the list (a roster, account handles, internal
+codenames), supply it via `LLM_PRIVACY_TERMS` (inline) and/or `LLM_PRIVACY_TERMS_FILE` (a file, one
+term per line, optional `term<TAB>KIND`; `#` comments and blank lines ignored). Semantics:
+
+- **Exact literal match**, case-insensitive by default (`LLM_PRIVACY_TERMS_IGNORE_CASE`); the
+  original text is preserved verbatim for a lossless restore regardless of case.
+- **Longest-first** within a kind, so a multi-word term wins over its own substrings.
+- **Boundary-guarded** (`(?<!\w)…(?!\w)`) — a term never matches inside a larger word or number.
+- Runs **after** source tags and **before** the regex packs, so an explicit tag always wins and a
+  listed term wins over a coincidental regex hit.
+- The file is **hot-reloaded** on mtime change — regenerate it from a job and the next message uses
+  it, no restart. The list is read locally only; it is never transmitted.
+
 ## Tier 2a — universal entities (on by default, no locale needed)
 
 | Entity | Matches | Gate |

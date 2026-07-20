@@ -328,6 +328,10 @@ class PrivacyVault:
         source_tags: bool = True,
         token_format: str = "⟦PII_{kind}_{n}⟧",
         max_values: int = 5000,
+        terms: Optional[Iterable[str]] = None,
+        terms_file: Optional[str] = None,
+        terms_kind: str = "TERM",
+        terms_ignore_case: bool = True,
         counter=None,  # shared iterator so tokens stay unique ACROSS vaults (no cross-vault collision)
     ):
         # Default: all universal patterns EXCEPT credit cards (opt-in — the only universal entity
@@ -346,6 +350,74 @@ class PrivacyVault:
         self._n = 0
         self._counter = counter
         self._lock = threading.Lock()
+        # Custom terms (Tier 1.5): a caller-supplied list of literal strings to always mask —
+        # personal names, internal codenames, account handles, anything a regex can't recognise.
+        # Terms may be given inline and/or in a file that some external job regenerates; the file
+        # is hot-reloaded on mtime change so a periodic refresh lands without a restart.
+        self._inline_terms: List[str] = [t for t in (terms or []) if t and t.strip()]
+        self._terms_file = terms_file or None
+        self._terms_kind = _sanitize_kind(terms_kind)
+        self._terms_ic = terms_ignore_case
+        self._term_patterns: List[Tuple[str, "re.Pattern"]] = []
+        self._terms_mtime = None
+        self._terms_lock = threading.Lock()
+        self._load_terms()
+
+    def _read_terms_file(self) -> List[Tuple[str, str]]:
+        """Parse the terms file: one term per line, optional ``term<TAB>KIND`` to set a custom token
+        kind; blank lines and ``#`` comments are ignored. A missing/unreadable file yields nothing."""
+        entries: List[Tuple[str, str]] = []
+        if not self._terms_file:
+            return entries
+        try:
+            with open(self._terms_file, "r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.rstrip("\n")
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    if "\t" in line:
+                        term, kind = line.split("\t", 1)
+                        kind = _sanitize_kind(kind) or self._terms_kind
+                    else:
+                        term, kind = line, self._terms_kind
+                    if term.strip():
+                        entries.append((term.strip(), kind))
+        except OSError:
+            pass
+        return entries
+
+    def _load_terms(self) -> None:
+        entries = [(t, self._terms_kind) for t in self._inline_terms] + self._read_terms_file()
+        by_kind: "OrderedDict[str, list]" = OrderedDict()
+        for term, kind in entries:
+            by_kind.setdefault(kind, []).append(term)
+        flags = re.IGNORECASE if self._terms_ic else 0
+        patterns: List[Tuple[str, "re.Pattern"]] = []
+        for kind, terms in by_kind.items():
+            # Longest-first: a regex alternation is leftmost-FIRST, so a longer/multi-word term must
+            # precede its own substrings to win. Boundaries stop matches inside a larger word/number.
+            ordered = sorted(set(terms), key=len, reverse=True)
+            alt = "|".join(re.escape(t) for t in ordered)
+            patterns.append((kind, re.compile(r"(?<!\w)(?:" + alt + r")(?!\w)", flags)))
+        mtime = None
+        if self._terms_file:
+            try:
+                mtime = os.stat(self._terms_file).st_mtime
+            except OSError:
+                mtime = None
+        with self._terms_lock:
+            self._term_patterns = patterns
+            self._terms_mtime = mtime
+
+    def _maybe_reload_terms(self) -> None:
+        if not self._terms_file:
+            return
+        try:
+            mtime = os.stat(self._terms_file).st_mtime
+        except OSError:
+            return
+        if mtime != self._terms_mtime:
+            self._load_terms()
 
     def _token(self, value: str, kind: str) -> str:
         if not value or not value.strip():  # keep the EXACT matched text (whitespace incl.) for lossless restore
@@ -370,6 +442,10 @@ class PrivacyVault:
             return text
         if self._source_tags:
             text = _TAG_RE.sub(lambda m: self._token(m.group(2), m.group(1)), text)
+        if self._terms_file:
+            self._maybe_reload_terms()
+        for kind, rx in self._term_patterns:  # Tier 1.5: caller-supplied literal terms
+            text = rx.sub(lambda m, k=kind: self._token(m.group(0), k), text)
         for kind, rx, validator in self._patterns:
             if validator is None:
                 text = rx.sub(lambda m, k=kind: self._token(m.group(0), k), text)
@@ -402,10 +478,17 @@ def _split(value: Optional[str]) -> Optional[list]:
     return parts or None
 
 
+def _sanitize_kind(kind: Optional[str]) -> str:
+    """A token kind must be a bare identifier — it goes into ``token_format`` and the restore path."""
+    k = re.sub(r"[^A-Za-z0-9_]", "", (kind or "").strip()).upper()
+    return k or "TERM"
+
+
 def register(ctx) -> None:
     """Hermes wires this up. Configure via env: LLM_PRIVACY_ENTITIES, LLM_PRIVACY_LOCALES,
     LLM_PRIVACY_SOURCE_TAGS, LLM_PRIVACY_TOKEN_FORMAT, LLM_PRIVACY_MAX_VALUES,
-    LLM_PRIVACY_MAX_SESSIONS.
+    LLM_PRIVACY_MAX_SESSIONS, LLM_PRIVACY_TERMS, LLM_PRIVACY_TERMS_FILE,
+    LLM_PRIVACY_TERMS_KIND, LLM_PRIVACY_TERMS_IGNORE_CASE.
 
     Vaults are **per session**: a token minted from a tool result in one conversation can only be
     restored in that same conversation (Hermes passes ``session_id`` to the tool-result and
@@ -418,6 +501,10 @@ def register(ctx) -> None:
         source_tags=os.getenv("LLM_PRIVACY_SOURCE_TAGS", "true").lower() not in ("0", "false", "no"),
         token_format=os.getenv("LLM_PRIVACY_TOKEN_FORMAT", "⟦PII_{kind}_{n}⟧"),
         max_values=int(os.getenv("LLM_PRIVACY_MAX_VALUES", "5000")),
+        terms=_split(os.getenv("LLM_PRIVACY_TERMS")),
+        terms_file=os.getenv("LLM_PRIVACY_TERMS_FILE") or None,
+        terms_kind=os.getenv("LLM_PRIVACY_TERMS_KIND", "TERM"),
+        terms_ignore_case=os.getenv("LLM_PRIVACY_TERMS_IGNORE_CASE", "true").lower() not in ("0", "false", "no"),
     )
     max_sessions = int(os.getenv("LLM_PRIVACY_MAX_SESSIONS", "200"))
     vaults: "OrderedDict[str, PrivacyVault]" = OrderedDict()

@@ -254,6 +254,45 @@ check("sess:terminal-masks", "⟦PII_EMAIL" in masked_t, masked_t)
 check("sess:terminal-restores", _rest(response_text=f"t {tok_t}", session_id="A") == "t bob@example.org")
 check("sess:same-value-diff-token", _mask(result="mail: alice@example.com", session_id="B") != masked_a)
 
+# ── 16. Custom terms (Tier 1.5): caller-supplied wordlist, all synthetic ────────
+import tempfile, time  # noqa: E402
+
+tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+tf.write("# a comment\nJohn Doe\tPERSON\nDoe\tPERSON\nPROJECT-ORION\tCODE\n\n")
+tf.flush(); tf.close()
+tv = PrivacyVault(entities=[], source_tags=False, terms=["Widget Alpha"], terms_file=tf.name, terms_kind="PERSON")
+src = "User John Doe (Doe) on PROJECT-ORION and Widget Alpha. The word Doeses stays."
+mt = tv.mask(src)
+check("terms:inline-masked", "Widget Alpha" not in mt, mt)
+check("terms:file-masked", "John Doe" not in mt and "Doe)" not in mt, mt)
+check("terms:custom-kind", "⟦PII_CODE_" in mt and "⟦PII_PERSON_" in mt, mt)
+check("terms:longest-first", mt.count("⟦PII_PERSON_") == 3, mt)  # John Doe, Doe, Widget Alpha
+check("terms:boundary-safe", "Doeses" in mt, mt)                 # no match inside a larger word
+check("terms:lossless", tv.restore(mt) == src, tv.restore(mt))
+
+# case-insensitive matching, lossless (original case preserved on restore)
+check("terms:ci-mask", "doe" not in tv.mask("lowercase doe here").lower().replace("pii_person", ""))
+tv2 = PrivacyVault(entities=[], source_tags=False, terms=["Doe"], terms_ignore_case=False)
+check("terms:case-sensitive-off", tv2.mask("Doe and doe")==tv2.mask("Doe and doe") and "doe" in tv2.mask("Doe and doe"))
+
+# hot reload on mtime change
+time.sleep(0.02)
+with open(tf.name, "a", encoding="utf-8") as fh:
+    fh.write("SECRET-ZZ9\tCODE\n")
+os.utime(tf.name, None)
+check("terms:hot-reload", "SECRET-ZZ9" not in tv.mask("has SECRET-ZZ9 inside"))
+os.unlink(tf.name)
+
+# register(): env-driven terms
+os.environ["LLM_PRIVACY_TERMS"] = "Acme Corp,Zeta"
+os.environ["LLM_PRIVACY_TERMS_KIND"] = "ORG"
+ctx2 = _Ctx(); register(ctx2)
+em = ctx2.hooks["transform_tool_result"](result="works at Acme Corp on Zeta", session_id="X")
+check("terms:env-register", "Acme Corp" not in em and "⟦PII_ORG_" in em, em)
+check("terms:env-restore", ctx2.hooks["transform_llm_output"](
+    response_text=em, session_id="X") == "works at Acme Corp on Zeta")
+del os.environ["LLM_PRIVACY_TERMS"]; del os.environ["LLM_PRIVACY_TERMS_KIND"]
+
 # ── report ─────────────────────────────────────────────────────────────────────
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
