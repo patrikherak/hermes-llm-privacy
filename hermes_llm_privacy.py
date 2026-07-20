@@ -538,6 +538,44 @@ def register(ctx) -> None:
         restored = _vault({}).restore(restored)  # terminal-minted tokens (no session context)
         return restored if restored != response_text else None
 
+    def _mask_egress(request_messages=None, **kw):
+        """EGRESS masking (opt-in, LLM_PRIVACY_EGRESS=1): tokenize PII in the whole outgoing
+        message list right before it goes to the provider — one chokepoint, so any path that
+        reached context WITHOUT firing the ingress hooks (bypassed tools, sub-agents, user input)
+        is still masked. Requires a host that lets pre_api_request replace the messages. Only text
+        content is touched; tool_use/tool_result structure and ids are left intact. Already-minted
+        tokens don't re-match, so this composes with the ingress hooks (safety net, not double-mask)."""
+        if not isinstance(request_messages, list):
+            return None
+        pv = _vault(kw)
+
+        def mask_content(c):
+            if isinstance(c, str):
+                return pv.mask(c)
+            if isinstance(c, list):
+                out = []
+                for b in c:
+                    if isinstance(b, dict) and isinstance(b.get("text"), str):
+                        b = {**b, "text": pv.mask(b["text"])}
+                    out.append(b)
+                return out
+            return c
+
+        new_msgs, changed = [], False
+        for m in request_messages:
+            if isinstance(m, dict) and "content" in m:
+                nc = mask_content(m["content"])
+                if nc != m["content"]:
+                    changed = True
+                new_msgs.append({**m, "content": nc})
+            else:
+                new_msgs.append(m)
+        return new_msgs if changed else None
+
     ctx.register_hook("transform_tool_result", _mask)       # MCP tool output
     ctx.register_hook("transform_terminal_output", _mask)   # shell / DB output
     ctx.register_hook("transform_llm_output", _restore)     # restore in the final message
+    if os.getenv("LLM_PRIVACY_EGRESS", "").lower() in ("1", "true", "yes"):
+        # Airtight variant: mask at the single provider chokepoint. Needs the host's
+        # pre_api_request hook to be mutable (return value replaces the outgoing messages).
+        ctx.register_hook("pre_api_request", _mask_egress)

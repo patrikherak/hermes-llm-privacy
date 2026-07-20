@@ -202,6 +202,20 @@ Honest boundaries:
 - **Turn-N replay is masked** (conversation history is written before `restore()` runs, so stored
   history keeps the tokens) — but that is ordering in the host, not a guarantee this plugin
   enforces; pin it with an integration test in your deployment.
+### Egress masking (experimental, opt-in) — closes the ingress gaps
+
+Set `LLM_PRIVACY_EGRESS=1` and the plugin also registers on `pre_api_request`, masking the **whole
+outgoing message list at the single provider chokepoint** — so any path that reached context
+without firing the input hooks (bypassed tools, sub-agent output, even user-typed input) is masked
+too, by construction. Only text content is touched; `tool_use`/`tool_result` structure and ids are
+preserved, and already-minted tokens don't re-match (it composes with the ingress hooks as a safety
+net). This is the airtight placement Luky's review argued for.
+
+**Caveat:** it requires the host's `pre_api_request` hook to be **mutable** — i.e. a returned
+message list replaces what's sent. Upstream Hermes' `pre_api_request` is observe-only (tracing), so
+this needs a small core change (or a pre-send LLM proxy). Without that mutable hook, setting the env
+var is a no-op. See [`deploy/EGRESS.md`](deploy/EGRESS.md) for the core diff and the PR status.
+
 - If you can't run a gateway hook layer at all, the same engine exists as a best-effort,
   instruction-based Agent Skill: [llm-privacy](https://github.com/patrikherak/llm-privacy) —
   see its README for the (weaker) guarantees that apply there.
