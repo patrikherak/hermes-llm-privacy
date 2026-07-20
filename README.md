@@ -38,11 +38,12 @@ The plugin registers three Hermes hooks around the model:
 Masked values are held in a bounded, in-process vault keyed by value, so the same input always
 yields the same token (stable across a session) and nothing ever leaves the machine.
 
-## Detection — three tiers, enable what you need
+## Detection — layered, enable what you need
 
 | Tier | Catches | Languages | Deps |
 |---|---|---|---|
 | **1 · Source tags** | anything your data layer knows is PII (`NAME`, `ADDRESS`, `PHONE`, …) | **all** — script-agnostic | none |
+| **1.5 · Custom terms** | a caller-supplied wordlist of exact strings — personal names, internal codenames, account handles — inline or from a hot-reloaded file | **all** — literal match | none |
 | **2 · Regex packs** | e-mail, IBAN, card (Luhn-gated), IPv4/IPv6, MAC, ETH, BTC, international phone; opt-in per-locale national phone + national-id packs for **48 countries** | per locale | none |
 | **3 · NER backend** | untagged free-text names/places | model-bound (Presidio / GLiNER) | opt-in |
 
@@ -87,9 +88,45 @@ Everything is configured via environment variables — sensible defaults, nothin
 | `LLM_PRIVACY_TOKEN_FORMAT` | `⟦PII_{kind}_{n}⟧` | token template the model sees |
 | `LLM_PRIVACY_MAX_VALUES` | `5000` | per-session vault size cap (LRU) |
 | `LLM_PRIVACY_MAX_SESSIONS` | `200` | concurrent session vaults kept (LRU) |
+| `LLM_PRIVACY_TERMS` | *(none)* | comma-list of literal terms to always mask (Tier 1.5) |
+| `LLM_PRIVACY_TERMS_FILE` | *(none)* | path to a wordlist file, hot-reloaded on change (Tier 1.5) |
+| `LLM_PRIVACY_TERMS_KIND` | `TERM` | default token kind for terms without an explicit one |
+| `LLM_PRIVACY_TERMS_IGNORE_CASE` | `true` | match terms case-insensitively (restore stays exact) |
 
 Credit-card masking is opt-in (`LLM_PRIVACY_ENTITIES=...,credit_card`) — it's the one entity
 whose length overlaps tracking/order numbers, and even then a Luhn check guards it.
+
+### Mask a custom wordlist (Tier 1.5)
+
+Regex can't know that `Jane Roe` is a person or `PROJECT-ORION` a codename. When your app already
+has that list — a roster, a table of account handles, internal project names — point the plugin at
+it and every occurrence in tool/terminal output is tokenized before the model sees it:
+
+```bash
+export LLM_PRIVACY_TERMS="Widget Alpha,Project Orion"     # inline
+export LLM_PRIVACY_TERMS_FILE=/etc/llm-privacy/terms.txt  # or a file (recommended for long lists)
+```
+
+The file is one term per line, with an optional `term<TAB>KIND` to control the token label; blank
+lines and `#` comments are ignored:
+
+```
+# terms.txt — all synthetic
+Jane Roe	PERSON
+Roe	PERSON
+PROJECT-ORION	CODE
+acme-internal	ORG
+```
+
+- **Longest-first**: `Jane Roe` masks as one token before the bare `Roe` ever matches.
+- **Boundary-safe**: `Roe` masks `Roe`, never the `Roe` inside `Roebuck`.
+- **Hot-reloaded**: regenerate the file from a cron/job and the change is picked up on the next
+  message — no restart. Ideal when the list is refreshed from a database.
+- **Lossless**: matching is case-insensitive by default, but the *exact* original text (case and
+  all) is restored in the model's final reply.
+
+The list itself never leaves your machine — the plugin only ever reads it locally to build the
+matcher; it is not sent anywhere.
 
 ### Tag PII at the source (Tier 1)
 
