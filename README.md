@@ -21,6 +21,14 @@ user gets:     Jan Novák · jan.novak@example.com · +420 601 111 222 · order 
 Order and tracking numbers stay visible — they aren't PII. Czech, 日本語, العربية and кирилиця
 names are masked identically, because detection doesn't depend on the language.
 
+> ⚠️ **The `NAME`/`ADDRESS` masking above needs wiring — it does not happen on a bare install.**
+> Names and addresses have no reliable universal pattern, so they are masked via **source tags**
+> (Tier 1): your tools must call `tag()` / emit the markers (see [Tag PII at the source](#tag-pii-at-the-source-tier-1)),
+> or you supply them via the **custom-terms** list, or enable a **NER** backend (Tier 3). A fresh
+> install with none of those runs **Tier 2 (regex: e-mail, IBAN, phone, IP, card…) + Tier 1.5
+> (custom terms)** only — structured PII is caught, but **free-text names/addresses are not**. The
+> example above assumes the data layer tags its known-PII columns (the common case for a DB agent).
+
 > Not on Hermes? The same engine is available as an LLM-agnostic Agent Skill:
 > **[llm-privacy](https://github.com/patrikherak/llm-privacy)** — works in Claude Code and any
 > agent that reads `SKILL.md`.
@@ -171,11 +179,29 @@ that restore also consults — single-session gateways are unaffected.)
 
 Honest boundaries:
 
-- **Covered:** MCP tool output and terminal/shell output (the two input hooks).
+- **Covered:** MCP tool output and terminal/shell output — the two input hooks
+  (`transform_tool_result`, `transform_terminal_output`).
+- **Ingress, per-path — not egress.** Masking runs as data *enters* context, per hook. Any tool
+  or path that reaches model context **without firing those hooks bypasses masking** — e.g. a
+  tool dispatched inline, or a sub-agent whose (already-restored) output is handed to a parent
+  agent. Masking at ingress means every new inbound path is a potential new hole. The airtight
+  design is to mask at **egress** — one chokepoint just before the request goes to the provider,
+  so nothing can bypass by construction. Hermes today exposes only an *observe-only*
+  `pre_api_request` hook (used for tracing), so true egress masking needs a mutable pre-send hook
+  upstream or an LLM proxy at the network edge. Until then, keep the agent's tool surface narrow
+  (every PII-bearing tool must go through one of the two input hooks).
+- **After `restore()` the text is real PII again.** `transform_llm_output` is the last hook that
+  can change the text; anything downstream of it — auto-title generation, memory storage,
+  observability plugins — handles the real values. If auto-title/summarisation calls *another*
+  LLM, that call is a fresh provider request (and would itself need masking). The plugin cannot
+  reach past the restore hook.
 - **Not covered:** text the *user themselves* types into the chat — inbound human messages are
   not intercepted. Don't paste PII at the model and expect the plugin to save you.
 - **Nothing retroactive:** the plugin protects from installation onward; whatever entered
   context before it was enabled has already been sent.
+- **Turn-N replay is masked** (conversation history is written before `restore()` runs, so stored
+  history keeps the tokens) — but that is ordering in the host, not a guarantee this plugin
+  enforces; pin it with an integration test in your deployment.
 - If you can't run a gateway hook layer at all, the same engine exists as a best-effort,
   instruction-based Agent Skill: [llm-privacy](https://github.com/patrikherak/llm-privacy) —
   see its README for the (weaker) guarantees that apply there.
