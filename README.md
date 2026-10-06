@@ -245,6 +245,15 @@ moves, egress **silently no-ops** (ingress hooks keep working — it never break
 ⚠️ It rewrites every provider request; validate on a non-critical agent first. Details in
 [`deploy/EGRESS.md`](deploy/EGRESS.md).
 
+Persistence (0.5.2): set `LLM_PRIVACY_VAULT_DIR=/path` and every session's token↔value map is
+appended to a private JSONL file (0600, directory 0700) as tokens are minted. After a gateway restart
+the tokens an older session can still echo restore again, and the shared counter continues past
+everything on disk so a number is never reused. Files untouched for `LLM_PRIVACY_VAULT_TTL_DAYS`
+(default 14) are deleted at start-up — the real values are PII at rest, keep them only as long as
+needed. Deployment helpers in [`deploy/`](deploy/): a terms file regenerated hourly from any
+database (`terms-from-db.py` + systemd units) and [`deploy/VERIFY.md`](deploy/VERIFY.md), the
+three checks that prove masking is actually happening.
+
 Two egress knobs added in 0.5.1:
 
 * `LLM_PRIVACY_EGRESS_TERMS=all` — the caller-supplied **terms** (a people list, a customer list) are

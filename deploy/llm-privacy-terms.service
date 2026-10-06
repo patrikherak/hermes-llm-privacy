@@ -1,0 +1,10 @@
+[Unit]
+Description=Regenerate the hermes-llm-privacy terms file from the database
+After=network-online.target
+
+[Service]
+Type=oneshot
+# TERMS_DB_URL, TERMS_SQL, TERMS_OUT, TERMS_KIND
+EnvironmentFile=/etc/llm-privacy/terms.env
+ExecStart=/usr/bin/python3 /usr/local/sbin/terms-from-db.py
+TimeoutStartSec=180

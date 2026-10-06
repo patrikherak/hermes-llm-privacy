@@ -395,6 +395,32 @@ import pathlib as _pl
 _pyproject = (_pl.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
 check("packaging:entry-point-is-module", 'hermes_llm_privacy = "hermes_llm_privacy"' in _pyproject and ':register"' not in _pyproject)
 
+# ── 19. Vault persistence: tokens survive a restart, the counter never reuses a number ───
+import tempfile as _tf, time as _tm
+_vd = _tf.mkdtemp(prefix="llm-privacy-vault-")
+os.environ["LLM_PRIVACY_VAULT_DIR"] = _vd
+os.environ["LLM_PRIVACY_TERMS"] = "Zdeněk Testovník"
+os.environ["LLM_PRIVACY_TERMS_KIND"] = "EMPLOYEE"
+ctx_a = _Ctx(); register(ctx_a)
+_tok_a = ctx_a.hooks["transform_terminal_output"](output="worker Zdeněk Testovník", session_id="sess-1")
+check("persist:token-minted", "⟦PII_EMPLOYEE_" in _tok_a, _tok_a)
+check("persist:file-written", os.path.exists(os.path.join(_vd, "sess-1.jsonl")), str(os.listdir(_vd)))
+check("persist:file-private", (os.stat(os.path.join(_vd, "sess-1.jsonl")).st_mode & 0o777) == 0o600)
+ctx_b = _Ctx(); register(ctx_b)                       # "restart": fresh vaults, same directory
+check("persist:restore-after-restart", ctx_b.hooks["transform_llm_output"](response_text=_tok_a, session_id="sess-1") == "worker Zdeněk Testovník")
+_tok_b = ctx_b.hooks["transform_terminal_output"](output="row 2 Zdeněk Testovník", session_id="sess-2")
+import re as _re
+_na, _nb = (int(_re.search(r"_(\d+)⟧", t).group(1)) for t in (_tok_a, _tok_b))
+check("persist:counter-continues", _nb > _na, f"{_tok_a} / {_tok_b}")
+_old = os.path.join(_vd, "stale.jsonl"); open(_old, "w").write('{"t": "⟦PII_EMPLOYEE_99⟧", "v": "x", "n": 99}\n')
+os.utime(_old, (_tm.time() - 40 * 86400,) * 2)
+os.environ["LLM_PRIVACY_VAULT_TTL_DAYS"] = "14"
+ctx_c = _Ctx(); register(ctx_c)
+check("persist:ttl-removes-old-sessions", not os.path.exists(_old))
+check("persist:other-session-isolated", ctx_c.hooks["transform_llm_output"](response_text=_tok_a, session_id="sess-9") is None)
+for _k in ("LLM_PRIVACY_VAULT_DIR", "LLM_PRIVACY_TERMS", "LLM_PRIVACY_TERMS_KIND", "LLM_PRIVACY_VAULT_TTL_DAYS"):
+    os.environ.pop(_k, None)
+
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
 if P["fails"]:

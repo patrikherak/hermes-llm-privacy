@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly terms file for hermes-llm-privacy (a new identity is masked within the hour)
+
+[Timer]
+OnBootSec=3min
+OnCalendar=*:07
+Persistent=true
+
+[Install]
+WantedBy=timers.target

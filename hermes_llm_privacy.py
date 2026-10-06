@@ -19,10 +19,12 @@ is documented in SPECS.md.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import threading
+import time as _time
 from collections import OrderedDict
 from typing import Callable, Iterable, List, Optional, Tuple
 
@@ -337,6 +339,7 @@ class PrivacyVault:
         terms_ignore_case: bool = True,
         detectors: Optional[Iterable[Callable]] = None,
         counter=None,  # shared iterator so tokens stay unique ACROSS vaults (no cross-vault collision)
+        persist_path: Optional[str] = None,  # JSONL file the token↔value map survives restarts in
     ):
         # Default: all universal patterns EXCEPT credit cards (opt-in — the only universal entity
         # whose length overlaps tracking/order numbers; a Luhn gate still guards it when enabled).
@@ -371,6 +374,41 @@ class PrivacyVault:
         self._terms_mtime = None
         self._terms_lock = threading.Lock()
         self._load_terms()
+        self._persist_path = persist_path or None
+        if self._persist_path:
+            self._load_persisted()
+
+    def _load_persisted(self) -> None:
+        """Rebuild the map from the JSONL written by ``_token`` — a token minted before a restart
+        still restores afterwards. Only the newest ``max_values`` entries are kept."""
+        try:
+            with open(self._persist_path, "r", encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return
+        for line in lines[-self._max:]:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            tok, val = rec.get("t"), rec.get("v")
+            if isinstance(tok, str) and isinstance(val, str) and tok and val:
+                self._t2v[tok] = val
+                self._v2t[val] = tok
+                self._n = max(self._n, int(rec.get("n") or 0))
+
+    def _persist(self, tok: str, val: str) -> None:
+        if not self._persist_path:
+            return
+        try:
+            d = os.path.dirname(self._persist_path)
+            if d:
+                os.makedirs(d, mode=0o700, exist_ok=True)
+            fd = os.open(self._persist_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"t": tok, "v": val, "n": self._n}, ensure_ascii=False) + "\n")
+        except OSError as exc:  # persistence is best-effort; masking must never fail because of it
+            _log.warning("hermes-llm-privacy: could not persist token map: %s", exc)
 
     def _read_terms_file(self) -> List[Tuple[str, str]]:
         """Parse the terms file: one term per line, optional ``term<TAB>KIND`` to set a custom token
@@ -443,6 +481,7 @@ class PrivacyVault:
             tok = self._fmt.format(kind=kind, n=self._n)
             self._t2v[tok] = value
             self._v2t[value] = tok
+            self._persist(tok, value)
             return tok
 
     def mask(self, text: str) -> str:
@@ -647,6 +686,44 @@ def _install_egress(vault_fn, terms_everywhere: bool = False) -> bool:
     return True
 
 
+def _vault_path(vault_dir: Optional[str], sid: str) -> Optional[str]:
+    if not vault_dir:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:120] or "_global"
+    return os.path.join(vault_dir, safe + ".jsonl")
+
+
+def _persisted_counter_start(vault_dir: Optional[str], ttl_days: int) -> int:
+    """Continue the shared token counter past everything on disk — a token number is never reused
+    after a restart — and drop session files older than ``ttl_days`` (the real values they hold are
+    PII at rest; keep them only as long as a session can still echo their tokens)."""
+    if not vault_dir:
+        return 1
+    highest = 0
+    try:
+        os.makedirs(vault_dir, mode=0o700, exist_ok=True)
+        cutoff = _time.time() - ttl_days * 86400
+        for name in os.listdir(vault_dir):
+            path = os.path.join(vault_dir, name)
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                if os.stat(path).st_mtime < cutoff:
+                    os.remove(path)
+                    continue
+                with open(path, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            highest = max(highest, int(json.loads(line).get("n") or 0))
+                        except ValueError:
+                            continue
+            except OSError:
+                continue
+    except OSError as exc:
+        _log.warning("hermes-llm-privacy: vault dir %s unusable, tokens stay in memory: %s", vault_dir, exc)
+    return highest + 1
+
+
 def register(ctx) -> None:
     """Hermes wires this up. Configure via env: LLM_PRIVACY_ENTITIES, LLM_PRIVACY_LOCALES,
     LLM_PRIVACY_SOURCE_TAGS, LLM_PRIVACY_TOKEN_FORMAT, LLM_PRIVACY_MAX_VALUES,
@@ -673,14 +750,16 @@ def register(ctx) -> None:
     max_sessions = int(os.getenv("LLM_PRIVACY_MAX_SESSIONS", "200"))
     vaults: "OrderedDict[str, PrivacyVault]" = OrderedDict()
     vlock = threading.Lock()
-    shared_counter = iter(range(1, 1 << 62))  # tokens unique across ALL vaults
+    vault_dir = os.getenv("LLM_PRIVACY_VAULT_DIR") or None
+    ttl_days = int(os.getenv("LLM_PRIVACY_VAULT_TTL_DAYS", "14"))
+    shared_counter = iter(range(_persisted_counter_start(vault_dir, ttl_days), 1 << 62))  # unique across ALL vaults
 
     def _vault(kw: dict) -> PrivacyVault:
         sid = str(kw.get("session_id") or kw.get("session") or kw.get("channel_id") or "_global")
         with vlock:
             pv = vaults.get(sid)
             if pv is None:
-                pv = PrivacyVault(counter=shared_counter, **cfg)
+                pv = PrivacyVault(counter=shared_counter, persist_path=_vault_path(vault_dir, sid), **cfg)
                 vaults[sid] = pv
                 if len(vaults) > max_sessions:
                     vaults.popitem(last=False)
