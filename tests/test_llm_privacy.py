@@ -356,6 +356,45 @@ check("ner:load-detector", callable(_load_detector("hermes_llm_privacy:luhn_ok")
 check("ner:load-detector-none", _load_detector(None) is None and _load_detector("nomodule:x") is None)
 
 # ── report ─────────────────────────────────────────────────────────────────────
+# ── 18. Egress terms everywhere + Responses shapes + tool-arg restore (all synthetic) ─
+_tv = PrivacyVault(entities=["EMAIL"], terms=["Zdeněk Testovník", "Testovník"], terms_kind="EMPLOYEE")
+_resp = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Co dělal Zdeněk Testovník? Piš na a@example.com"}]},
+         {"type": "function_call", "call_id": "c1", "name": "sql", "arguments": "{\"q\": 1}"},
+         {"type": "function_call_output", "call_id": "c1", "output": "row: Testovník | bob@example.org"}]
+_scoped = _mask_message_list(_tv, _resp, terms_everywhere=False)
+check("egress:responses-human-raw-by-default", "Zdeněk Testovník" in _scoped[0]["content"][0]["text"], str(_scoped[0]))
+check("egress:responses-tooloutput-masked", "bob@example.org" not in _scoped[2]["output"] and "Testovník" not in _scoped[2]["output"], _scoped[2]["output"])
+_all = _mask_message_list(_tv, _resp, terms_everywhere=True)
+_human = _all[0]["content"][0]["text"]
+check("egress:terms-all-human-term-masked", "Testovník" not in _human and "⟦PII_EMPLOYEE_" in _human, _human)
+check("egress:terms-all-human-email-kept", "a@example.com" in _human, _human)
+check("egress:terms-all-function-call-preserved", _all[1] == _resp[1])
+_chat = _mask_message_list(_tv, [{"role": "system", "content": "Hlídej Zdeněk Testovník"}, {"role": "assistant", "content": "ok Testovník"}], terms_everywhere=True)
+check("egress:terms-all-system-and-assistant", all("Testovník" not in m["content"] for m in _chat), str(_chat))
+check("egress:terms-all-restores", "Zdeněk Testovník" in _tv.restore(_human))
+
+# tool-argument restore middleware
+os.environ["LLM_PRIVACY_TERMS"] = "Zdeněk Testovník"
+os.environ["LLM_PRIVACY_TERMS_KIND"] = "EMPLOYEE"
+class _CtxMw(_Ctx):
+    def __init__(self):
+        super().__init__(); self.middleware = {}
+    def register_middleware(self, kind, fn):
+        self.middleware[kind] = fn
+ctx3 = _CtxMw(); register(ctx3)
+_masked = ctx3.hooks["transform_terminal_output"](output="worker Zdeněk Testovník 113 lines", session_id="S9")
+check("toolargs:token-minted", "⟦PII_EMPLOYEE_" in _masked, _masked)
+_mw = ctx3.middleware["tool_request"](tool_name="send_message", args={"content": _masked, "nested": {"list": [_masked]}}, session_id="S9")
+check("toolargs:restored-everywhere", _mw is not None and _mw["args"]["content"] == "worker Zdeněk Testovník 113 lines"
+      and _mw["args"]["nested"]["list"][0].endswith("113 lines") and "⟦" not in str(_mw["args"]), str(_mw))
+check("toolargs:untouched-when-clean", ctx3.middleware["tool_request"](tool_name="send_message", args={"content": "clean"}, session_id="S9") is None)
+del os.environ["LLM_PRIVACY_TERMS"]; del os.environ["LLM_PRIVACY_TERMS_KIND"]
+
+# packaging: Hermes loads the entry point and calls module.register — it must point at the module
+import pathlib as _pl
+_pyproject = (_pl.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+check("packaging:entry-point-is-module", 'hermes_llm_privacy = "hermes_llm_privacy"' in _pyproject and ':register"' not in _pyproject)
+
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
 if P["fails"]:

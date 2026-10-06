@@ -474,6 +474,30 @@ class PrivacyVault:
                 )
         return text
 
+    def mask_terms(self, text: str) -> str:
+        """Tokenize only the caller-supplied terms and source tags — the identities the model never
+        needs verbatim (an employee, a customer, a code name). Regex entities and detectors are left
+        alone so a value the human hands over (an e-mail, an order id) still reaches a tool intact."""
+        if not isinstance(text, str) or not text:
+            return text
+        if self._source_tags:
+            text = _TAG_RE.sub(lambda m: self._token(m.group(2), m.group(1)), text)
+        if self._terms_file:
+            self._maybe_reload_terms()
+        for kind, rx in self._term_patterns:
+            text = rx.sub(lambda m, k=kind: self._token(m.group(0), k), text)
+        return text
+
+    def restore_value(self, value):
+        """``restore`` applied through nested dicts/lists — tool arguments, response payloads."""
+        if isinstance(value, str):
+            return self.restore(value)
+        if isinstance(value, list):
+            return [self.restore_value(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self.restore_value(v) for k, v in value.items()}
+        return value
+
     def restore(self, text: str) -> str:
         """Swap tokens back to the real values (call on the way OUT — final model message)."""
         if not isinstance(text, str) or not text or not self._t2v:
@@ -518,7 +542,7 @@ def _load_detector(spec: Optional[str]) -> Optional[list]:
         return None
 
 
-def _mask_message_list(pv: "PrivacyVault", messages: list) -> list:
+def _mask_message_list(pv: "PrivacyVault", messages: list, terms_everywhere: bool = False) -> list:
     """Mask PII in **tool-result content only**, at the outgoing-request boundary.
 
     Crucially it does NOT touch human/system/assistant text: the user must still be able to hand the
@@ -528,7 +552,22 @@ def _mask_message_list(pv: "PrivacyVault", messages: list) -> list:
     results that reached the model via a path that bypassed the ingress hooks. Structure/ids of
     ``tool_result`` blocks are preserved; already-minted tokens don't re-match (composes with
     ingress). Handles both the Anthropic (``tool_result`` blocks in a user message) and OpenAI
-    (``role: tool`` message) shapes."""
+    (``role: tool`` message) shapes, and the OpenAI Responses shapes (``type: message`` items with
+    ``input_text``/``output_text`` parts, ``function_call_output`` items).
+
+    With ``terms_everywhere`` the caller-supplied TERMS (and source tags) are tokenized in human,
+    system and assistant text as well — an identity the human types still never reaches the
+    provider, while regex entities keep the value-passing guarantee above."""
+    def text_terms(value):
+        return pv.mask_terms(value) if terms_everywhere and isinstance(value, str) else value
+
+    def parts_terms(parts):
+        if not terms_everywhere or not isinstance(parts, list):
+            return parts
+        return [({**x, "text": pv.mask_terms(x["text"])}
+                 if isinstance(x, dict) and isinstance(x.get("text"), str) and x.get("type") != "tool_result" else x)
+                for x in parts]
+
     def mask_blocks(blocks):
         out = []
         for b in blocks:
@@ -550,16 +589,26 @@ def _mask_message_list(pv: "PrivacyVault", messages: list) -> list:
             new.append(m)
             continue
         content = m.get("content")
-        if m.get("role") == "tool":                 # OpenAI/Chat tool-result message
+        if m.get("type") == "function_call_output":  # Responses tool result
+            out = m.get("output")
+            if isinstance(out, str):
+                new.append({**m, "output": pv.mask(out)})
+            elif isinstance(out, list):
+                new.append({**m, "output": [({**x, "text": pv.mask(x["text"])}
+                                             if isinstance(x, dict) and isinstance(x.get("text"), str) else x)
+                                            for x in out]})
+            else:
+                new.append(m)
+        elif m.get("role") == "tool":               # OpenAI/Chat tool-result message
             new.append({**m, "content": pv.mask(content)} if isinstance(content, str) else m)
-        elif isinstance(content, list):             # Anthropic content blocks — tool_result only
-            new.append({**m, "content": mask_blocks(content)})
-        else:                                        # human/system/assistant text — leave raw
-            new.append(m)
+        elif isinstance(content, list):             # Anthropic / Responses content parts
+            new.append({**m, "content": parts_terms(mask_blocks(content))})
+        else:                                        # human/system/assistant text — raw, or terms only
+            new.append({**m, "content": text_terms(content)} if isinstance(content, str) else m)
     return new
 
 
-def _install_egress(vault_fn) -> bool:
+def _install_egress(vault_fn, terms_everywhere: bool = False) -> bool:
     """Airtight EGRESS masking with **no host core change**: monkeypatch the single provider-call
     chokepoint (``agent.chat_completion_helpers.interruptible_api_call``) so EVERY outgoing request
     is masked — even context that reached the model via a path that never fired the ingress hooks
@@ -586,7 +635,9 @@ def _install_egress(vault_fn) -> bool:
                 for key in ("messages", "input"):
                     v = api_kwargs.get(key)
                     if isinstance(v, list):
-                        api_kwargs[key] = _mask_message_list(pv, v)
+                        api_kwargs[key] = _mask_message_list(pv, v, terms_everywhere)
+                if terms_everywhere and isinstance(api_kwargs.get("instructions"), str):
+                    api_kwargs["instructions"] = pv.mask_terms(api_kwargs["instructions"])
         except Exception:
             pass  # never break the request path
         return orig(agent_obj, api_kwargs, *args, **kwargs)
@@ -651,13 +702,24 @@ def register(ctx) -> None:
         restored = _vault({}).restore(restored)  # terminal-minted tokens (no session context)
         return restored if restored != response_text else None
 
+    def _restore_tool_args(tool_name="", args=None, **kw):
+        """A token the model wrote into a tool call (a message, a record, a file) is a placeholder
+        nobody outside the model should ever see; swap the real value back before the tool runs."""
+        if not isinstance(args, dict):
+            return None
+        restored = _vault({}).restore_value(_vault(kw).restore_value(args))
+        return {"args": restored, "source": "hermes-llm-privacy"} if restored != args else None
+
     ctx.register_hook("transform_tool_result", _mask)       # MCP tool output
     ctx.register_hook("transform_terminal_output", _mask)   # shell / DB output
     ctx.register_hook("transform_llm_output", _restore)     # restore in the final message
+    if hasattr(ctx, "register_middleware"):
+        ctx.register_middleware("tool_request", _restore_tool_args)  # restore in tool arguments
     if os.getenv("LLM_PRIVACY_EGRESS", "").lower() in ("1", "true", "yes"):
         # Privacy-critical: a silent egress no-op means PII is NOT masked at the provider boundary,
         # so ALWAYS log the install outcome loudly — never let egress fail unnoticed.
-        if _install_egress(_vault):
+        terms_everywhere = os.getenv("LLM_PRIVACY_EGRESS_TERMS", "tool").lower() in ("all", "everywhere", "1", "true")
+        if _install_egress(_vault, terms_everywhere):
             _log.warning("hermes-llm-privacy: egress masking ACTIVE — provider-call chokepoint "
                          "patched (agent.chat_completion_helpers.interruptible_api_call)")
         else:

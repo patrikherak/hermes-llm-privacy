@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-llm-privacy"
-version = "0.5.0"
+version = "0.5.1"
 description = "Deterministic, reversible, multilingual PII tokenization for LLM agents (Hermes plugin)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -25,7 +25,7 @@ Homepage = "https://github.com/patrikherak/hermes-llm-privacy"
 Issues = "https://github.com/patrikherak/hermes-llm-privacy/issues"
 
 [project.entry-points."hermes_agent.plugins"]
-hermes_llm_privacy = "hermes_llm_privacy:register"
+hermes_llm_privacy = "hermes_llm_privacy"
 
 [tool.setuptools]
 py-modules = ["hermes_llm_privacy"]

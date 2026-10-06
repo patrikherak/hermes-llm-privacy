@@ -245,6 +245,17 @@ moves, egress **silently no-ops** (ingress hooks keep working — it never break
 ⚠️ It rewrites every provider request; validate on a non-critical agent first. Details in
 [`deploy/EGRESS.md`](deploy/EGRESS.md).
 
+Two egress knobs added in 0.5.1:
+
+* `LLM_PRIVACY_EGRESS_TERMS=all` — the caller-supplied **terms** (a people list, a customer list) are
+  tokenized in human, system and assistant text too, not only in tool results. A name the human types
+  never reaches the provider; regex entities (e-mails, ids) keep the value-passing guarantee and stay raw
+  in human text. Default `tool` = previous behaviour.
+* Tool arguments are restored: when the model writes a token into a tool call (a chat message, a record,
+  a file), the `tool_request` middleware swaps the real value back before the tool runs, so a placeholder
+  never leaves the agent. Egress also understands the OpenAI Responses shapes (`type: message` parts,
+  `function_call_output`), which the Codex providers use.
+
 - If you can't run a gateway hook layer at all, the same engine exists as a best-effort,
   instruction-based Agent Skill: [llm-privacy](https://github.com/patrikherak/llm-privacy) —
   see its README for the (weaker) guarantees that apply there.
