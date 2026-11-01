@@ -133,6 +133,10 @@ acme-internal	ORG
   message — no restart. Ideal when the list is refreshed from a database.
 - **Lossless**: matching is case-insensitive by default, but the *exact* original text (case and
   all) is restored in the model's final reply.
+- **Fast at any size** (0.5.3): each kind's terms are compiled into one trie-shaped regex, built
+  once per process and shared by every session, so masking cost no longer grows with the list
+  size — with output identical to the plain longest-first alternation. With 60,000 generated
+  names, 6 KB of text masks in ~0.5 ms instead of ~440 ms.
 
 The list itself never leaves your machine — the plugin only ever reads it locally to build the
 matcher; it is not sent anywhere.

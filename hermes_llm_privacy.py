@@ -26,6 +26,7 @@ import re
 import threading
 import time as _time
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Callable, Iterable, List, Optional, Tuple
 
 _log = logging.getLogger("hermes_llm_privacy")
@@ -323,6 +324,82 @@ LOCALES: dict = {
 }
 
 
+_ASTRAL_CASE_WORKS_IN_SETS = re.fullmatch("[\U00010400a]", "\U00010400", re.IGNORECASE) is not None
+
+
+def _alternation_pattern(terms: Iterable[str], flags: int) -> "re.Pattern":
+    ordered = sorted(terms, key=len, reverse=True)
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(t) for t in ordered) + r")(?!\w)", flags)
+
+
+def _case_classes(chars: Iterable[str], flags: int) -> dict:
+    if not flags & re.IGNORECASE:
+        return {ch: ch for ch in chars}
+    pool = "".join(sorted(chars))
+    parent = {ch: ch for ch in pool}
+
+    def root(ch: str) -> str:
+        while parent[ch] != ch:
+            parent[ch] = parent[parent[ch]]
+            ch = parent[ch]
+        return ch
+
+    for ch in pool:
+        for same in re.findall(re.escape(ch), pool, flags):
+            a, b = root(ch), root(same)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    return {ch: root(ch) for ch in pool}
+
+
+def _trie_is_exact(terms: Tuple[str, ...], flags: int) -> bool:
+    if _ASTRAL_CASE_WORKS_IN_SETS or not flags & re.IGNORECASE:
+        return True
+    return all(ord(ch) <= 0xFFFF or ch == ch.lower() for term in terms for ch in term)
+
+
+def _class_atom(members: List[str]) -> str:
+    return re.escape(members[0]) if len(members) == 1 else "[" + "".join(map(re.escape, members)) + "]"
+
+
+def _trie_source(terms: Tuple[str, ...], flags: int) -> str:
+    chars = {ch for term in terms for ch in term}
+    key = _case_classes(chars, flags)
+    members: dict = {}
+    for ch in sorted(chars):
+        members.setdefault(key[ch], []).append(ch)
+    atoms = {k: _class_atom(group) for k, group in members.items()}
+    root: dict = {}
+    for term in terms:
+        node = root
+        for ch in term:
+            node = node.setdefault(key[ch], {})
+        node[""] = {}
+
+    def build(node: dict) -> str:
+        branches = [atoms[k] + build(child) for k, child in sorted(node.items()) if k != ""]
+        if not branches:
+            return ""
+        body = branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+        return "(?:" + body + ")?" if "" in node else body
+
+    return r"(?<!\w)(?:" + build(root) + r")(?!\w)"
+
+
+@lru_cache(maxsize=32)
+def _compile_term_set(terms: Tuple[str, ...], flags: int) -> "re.Pattern":
+    if not _trie_is_exact(terms, flags):
+        return _alternation_pattern(terms, flags)
+    try:
+        return re.compile(_trie_source(terms, flags), flags)
+    except (RecursionError, re.error, OverflowError, MemoryError):
+        return _alternation_pattern(terms, flags)
+
+
+def _term_pattern(terms: Iterable[str], flags: int) -> "re.Pattern":
+    return _compile_term_set(tuple(sorted(set(terms))), flags)
+
+
 class PrivacyVault:
     """A per-process vault + mask/restore. One instance per gateway (each is its own process)."""
 
@@ -441,11 +518,7 @@ class PrivacyVault:
         flags = re.IGNORECASE if self._terms_ic else 0
         patterns: List[Tuple[str, "re.Pattern"]] = []
         for kind, terms in by_kind.items():
-            # Longest-first: a regex alternation is leftmost-FIRST, so a longer/multi-word term must
-            # precede its own substrings to win. Boundaries stop matches inside a larger word/number.
-            ordered = sorted(set(terms), key=len, reverse=True)
-            alt = "|".join(re.escape(t) for t in ordered)
-            patterns.append((kind, re.compile(r"(?<!\w)(?:" + alt + r")(?!\w)", flags)))
+            patterns.append((kind, _term_pattern(terms, flags)))
         mtime = None
         if self._terms_file:
             try:

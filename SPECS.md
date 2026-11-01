@@ -23,6 +23,9 @@ term per line, optional `term<TAB>KIND`; `#` comments and blank lines ignored). 
   original text is preserved verbatim for a lossless restore regardless of case.
 - **Longest-first** within a kind, so a multi-word term wins over its own substrings.
 - **Boundary-guarded** (`(?<!\w)…(?!\w)`) — a term never matches inside a larger word or number.
+- **One trie-shaped regex per kind** (letter classes taken from `re`'s own case rules), so matching
+  cost does not grow with the list size; the result is identical to the longest-first alternation,
+  which stays the fallback for lists the trie cannot express exactly.
 - Runs **after** source tags and **before** the regex packs, so an explicit tag always wins and a
   listed term wins over a coincidental regex hit.
 - The file is **hot-reloaded** on mtime change — regenerate it from a job and the next message uses

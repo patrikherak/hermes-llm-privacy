@@ -421,6 +421,118 @@ check("persist:other-session-isolated", ctx_c.hooks["transform_llm_output"](resp
 for _k in ("LLM_PRIVACY_VAULT_DIR", "LLM_PRIVACY_TERMS", "LLM_PRIVACY_TERMS_KIND", "LLM_PRIVACY_VAULT_TTL_DAYS"):
     os.environ.pop(_k, None)
 
+import random as _rnd
+from hermes_llm_privacy import _compile_term_set, _term_pattern
+
+_FUZZ_LETTERS = {
+    "czech": "aábcčdďeéěfghiíjklmnňoópqrřsštťuúůvwxyýzž",
+    "turkish": "abcçdefgğhıijklmnoöprsştuüvyzIİ",
+    "greek": "αβγδεζηθικλμνξοπρσςτυφχψωϐϑϰϖϱϕϵΣΘΠΒ",
+    "german": "abcdefghijklmnopqrstuvwxyzäöüßẞſ",
+    "cyrillic": "абвгдеёжзийклмнопрстуфхцчшщъыьэюяїієґ",
+    "cjk": "山川日月水火木金土天人口中大小",
+    "case-oddities": "µμkKKåÅǅǄǆ",
+    "astral-cased": "\U00010400\U00010428\U0001E900\U0001E922\U000104B0\U000104D8",
+}
+_FUZZ_SWAPS = {"i": "ıİI", "ı": "iI", "s": "ſS", "ſ": "sS", "σ": "ςΣ", "ς": "σΣ", "β": "ϐΒ", "ϐ": "β",
+               "θ": "ϑΘ", "µ": "μ", "μ": "µ", "k": "KK", "å": "Å", "ß": "ẞ", "ẞ": "ß",
+               "\U00010400": "\U00010428", "\U00010428": "\U00010400"}
+_FUZZ_SEPARATORS = [" ", "\u00a0", "-", ".", ", ", "\n", "(", ")", "'", "/", "", "1", "_", "7"]
+
+
+def _fuzz_variant(rng, text):
+    out = []
+    for ch in text:
+        roll = rng.random()
+        if roll < 0.15 and len(ch.upper()) == 1:
+            out.append(ch.upper())
+        elif roll < 0.25 and ch in _FUZZ_SWAPS:
+            out.append(rng.choice(_FUZZ_SWAPS[ch]))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _fuzz_case(rng):
+    letters = "".join(_FUZZ_LETTERS[name] for name in rng.sample(sorted(_FUZZ_LETTERS), rng.randint(1, 3)))
+    words = ["".join(rng.choice(letters) for _ in range(rng.randint(1, 6))) for _ in range(rng.randint(3, 20))]
+    terms = set()
+    for word in words:
+        terms.add(word)
+        if rng.random() < 0.5:
+            terms.add(word + rng.choice([" ", "-", "'", ". "]) + rng.choice(words))
+        if rng.random() < 0.3 and len(word) > 1:
+            terms.add(word[: rng.randint(1, len(word) - 1)])
+        if rng.random() < 0.3:
+            terms.add(_fuzz_variant(rng, word))
+    terms = sorted(terms)
+    pieces = []
+    for _ in range(rng.randint(5, 30)):
+        roll = rng.random()
+        if roll < 0.5:
+            pieces.append(_fuzz_variant(rng, rng.choice(terms)))
+        elif roll < 0.8:
+            pieces.append(_fuzz_variant(rng, rng.choice(words)))
+        else:
+            pieces.append("".join(rng.choice(letters) for _ in range(rng.randint(1, 8))))
+        pieces.append(rng.choice(_FUZZ_SEPARATORS))
+    return terms, "".join(pieces)
+
+
+def _alternation_oracle(terms, flags):
+    ordered = sorted(set(terms), key=lambda t: (-len(t), t))
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(t) for t in ordered) + r")(?!\w)", flags)
+
+
+def _bracket(m):
+    return "⟦" + m.group(0) + "⟧"
+
+
+for _label, _flags, _seed in (("ignore-case", re.IGNORECASE, 20261101), ("case-sensitive", 0, 20261102)):
+    _rng = _rnd.Random(_seed)
+    _cases, _diffs, _spans, _trie_cases = 300, [], 0, 0
+    for _ in range(_cases):
+        _terms, _text = _fuzz_case(_rng)
+        _oracle = _alternation_oracle(_terms, _flags)
+        _pattern = _term_pattern(_terms, _flags)
+        _expected = _oracle.sub(_bracket, _text)
+        _spans += _expected.count("⟦")
+        _trie_cases += _pattern.pattern != _oracle.pattern
+        if _pattern.sub(_bracket, _text) != _expected:
+            _diffs.append((_terms, _text))
+    check(f"trie:fuzz-{_label}-identical", not _diffs, ascii(_diffs[:1]))
+    check(f"trie:fuzz-{_label}-exercised", _spans > 1000 and _trie_cases > _cases // 2,
+          f"spans={_spans} trie={_trie_cases}/{_cases}")
+
+_turkish_vault = PrivacyVault(entities=[], source_tags=False, terms=["Ali", "Alı Veli"], terms_kind="PERSON")
+_turkish_masked = _turkish_vault.mask("Ahoj Ali Veli, jak se máš?")
+check("trie:dotless-i-longest-term-wins", _turkish_masked == "Ahoj ⟦PII_PERSON_1⟧, jak se máš?", _turkish_masked)
+check("trie:dotless-i-lossless", _turkish_vault.restore(_turkish_masked) == "Ahoj Ali Veli, jak se máš?")
+
+_exact_case_vault = PrivacyVault(entities=[], source_tags=False, terms=["Doe"], terms_ignore_case=False)
+_exact_case_masked = _exact_case_vault.mask("Doe and doe")
+check("trie:case-sensitive-exact", _exact_case_masked == "⟦PII_TERM_1⟧ and doe", _exact_case_masked)
+
+_astral_terms = ["x\U00010400", "xb", "ya"]
+_astral_masked = _term_pattern(_astral_terms, re.IGNORECASE).sub(_bracket, "x\U00010400 x\U00010428 xb ya")
+check("trie:astral-uppercase-masked", _astral_masked == "⟦x\U00010400⟧ ⟦x\U00010428⟧ ⟦xb⟧ ⟦ya⟧", ascii(_astral_masked))
+
+_nested = ["a" * n for n in range(1, 1001)]
+_nested_text = "a" * 500 + " " + "A" + "a" * 999 + " " + "a" * 1001 + " x"
+_nested_pattern = _term_pattern(_nested, re.IGNORECASE)
+_nested_oracle = _alternation_oracle(_nested, re.IGNORECASE)
+_nested_masked = _nested_pattern.sub(_bracket, _nested_text)
+check("trie:deep-nesting-falls-back", _nested_pattern.pattern == _nested_oracle.pattern)
+check("trie:deep-nesting-identical", _nested_masked == _nested_oracle.sub(_bracket, _nested_text)
+      and _nested_masked.count("⟦") == 2, _nested_masked[:80])
+
+_hits_before = _compile_term_set.cache_info().hits
+_memo_a = PrivacyVault(entities=[], source_tags=False, terms=["Gamma Delta", "Beta", "Alpha"])
+_memo_b = PrivacyVault(entities=[], source_tags=False, terms=["Alpha", "Beta", "Gamma Delta", "Beta"])
+check("trie:memo-same-object", _memo_a._term_patterns[0][1] is _memo_b._term_patterns[0][1])
+check("trie:memo-hit", _compile_term_set.cache_info().hits == _hits_before + 1, str(_compile_term_set.cache_info()))
+check("trie:memo-keyed-by-flags", _term_pattern(["Alpha", "Beta", "Gamma Delta"], 0) is not _memo_a._term_patterns[0][1])
+
 total = P["ok"] + P["fail"]
 print(f"\n{'='*62}\nLLM-PRIVACY TEST STACK — {P['ok']}/{total} passed\n{'='*62}")
 if P["fails"]:
